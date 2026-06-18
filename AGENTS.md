@@ -11,6 +11,7 @@ ASUP player is a small Android 12+ video player skeleton written in Kotlin. The 
 - Use the system document picker for local files. Do not add broad storage permissions unless the feature truly needs them.
 - Pass picker `content://` URIs to playback through `ContentResolver` file descriptors; do not pass raw document URIs directly to libVLC.
 - Preserve playback across orientation changes.
+- Keep the screen awake only while playback is active.
 - Treat system bars and window insets carefully:
   - portrait keeps system bars visible and pads player controls above navigation;
   - landscape uses immersive fullscreen.
@@ -36,9 +37,10 @@ ASUP player is a small Android 12+ video player skeleton written in Kotlin. The 
 - App starts with a black screen and a centered `Найти видео` button.
 - The file picker opens local video files.
 - After opening a file, libVLC starts video playback and hides the button.
+- Player controls provide seek, play/pause, audio track selection, and subtitle selection.
 - Portrait keeps system bars visible; landscape hides system bars for immersive playback.
 
 ## Current Scope
 
 - This is the minimal working skeleton.
-- Do not add advanced controls, playlists, subtitles, network browsing, or storage permissions unless the current task explicitly asks for them.
+- Do not add playlists, network browsing, storage permissions, or advanced playback features unless the current task explicitly asks for them.

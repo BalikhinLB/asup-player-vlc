@@ -27,5 +27,63 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:text="@string/find_video" />
+
+        <LinearLayout
+            android:id="@+id/player_controls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="#B3000000"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="10dp"
+            android:visibility="gone">
+
+            <SeekBar
+                android:id="@+id/playback_seek"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:max="1000"
+                android:progress="0" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/play_pause_button"
+                    android:layout_width="56dp"
+                    android:layout_height="48dp"
+                    android:minWidth="0dp"
+                    android:text="@string/pause" />
+
+                <TextView
+                    android:id="@+id/playback_time"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:text="@string/playback_time_placeholder"
+                    android:textColor="@android:color/white"
+                    android:textSize="14sp" />
+
+                <Button
+                    android:id="@+id/audio_track_button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="@string/audio_tracks" />
+
+                <Button
+                    android:id="@+id/subtitle_track_button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/subtitle_tracks" />
+            </LinearLayout>
+        </LinearLayout>
     </FrameLayout>
 </FrameLayout>

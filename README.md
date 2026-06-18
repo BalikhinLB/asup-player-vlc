@@ -9,6 +9,8 @@ The current goal is a working base app that can be extended with player controls
 - Starts on a black screen with a centered `Найти видео` button.
 - Opens local videos through Android's system document picker.
 - Plays the selected video with libVLC.
+- Shows minimal playback controls: seek bar, play/pause, audio track menu, and subtitle track menu.
+- Keeps the screen on while video is playing.
 - Keeps the current Activity alive across orientation changes.
 - Keeps system bars visible in portrait and switches to immersive fullscreen in landscape.
 
@@ -55,7 +57,7 @@ gradle/libs.versions.toml
 - Local file selection uses `ActivityResultContracts.OpenDocument`.
 - The app requests persistable read access for selected document URIs when the provider supports it.
 - Picked `content://` videos are opened through `ContentResolver.openAssetFileDescriptor` before being passed to libVLC.
-- Playback is intentionally minimal: the first screen only opens a file and starts playback.
+- Playback is intentionally minimal: the app opens a file, starts playback, and exposes only core controls.
 - Orientation changes are handled by `MainActivity` through manifest `configChanges`; the selected URI and playback position are also saved for basic Activity recreation recovery.
 - The app does not request broad storage permissions.
 

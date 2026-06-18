@@ -2,5 +2,12 @@
 <resources>
     <string name="app_name">ASUP player</string>
     <string name="find_video">Найти видео</string>
+    <string name="play">▶</string>
+    <string name="pause">Ⅱ</string>
+    <string name="audio_tracks">Аудио</string>
+    <string name="subtitle_tracks">Субтитры</string>
+    <string name="subtitles_off">Отключить</string>
+    <string name="tracks_empty">Нет дорожек</string>
+    <string name="playback_time_placeholder">00:00 / 00:00</string>
     <string name="video_open_error">Не удалось открыть видео</string>
 </resources>

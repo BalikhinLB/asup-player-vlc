@@ -1,0 +1,13 @@
+[versions]
+activity = "1.13.0"
+agp = "9.2.1"
+coreKtx = "1.18.0"
+libvlc = "3.7.4"
+
+[libraries]
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+libvlc-all = { group = "org.videolan.android", name = "libvlc-all", version.ref = "libvlc" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

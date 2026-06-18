@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ASUP player</string>
+    <string name="find_video">Найти видео</string>
+    <string name="video_open_error">Не удалось открыть видео</string>
+</resources>

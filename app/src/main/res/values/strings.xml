@@ -3,11 +3,20 @@
     <string name="app_name">ASUP player</string>
     <string name="find_video">Найти видео</string>
     <string name="play">▶</string>
-    <string name="pause">Ⅱ</string>
+    <string name="pause">||</string>
     <string name="audio_tracks">Аудио</string>
     <string name="subtitle_tracks">Субтитры</string>
+    <string name="load_subtitles">Загрузить файл</string>
     <string name="subtitles_off">Отключить</string>
     <string name="tracks_empty">Нет дорожек</string>
+    <string name="player_menu">Меню плеера</string>
+    <string name="subtitle_size">Размер</string>
+    <string name="subtitle_position">Положение</string>
+    <string name="subtitle_position_top">Верх</string>
+    <string name="subtitle_position_center">Центр</string>
+    <string name="subtitle_position_bottom">Низ</string>
     <string name="playback_time_placeholder">00:00 / 00:00</string>
     <string name="video_open_error">Не удалось открыть видео</string>
+    <string name="subtitle_loaded">Субтитры загружены: %1$s</string>
+    <string name="subtitle_open_error">Не удалось открыть субтитры</string>
 </resources>

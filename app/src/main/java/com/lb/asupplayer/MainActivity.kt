@@ -440,7 +440,9 @@ class MainActivity : ComponentActivity() {
                     text = track.name.ifBlank { track.id.toString() },
                     isSelected = track.id == mediaPlayer.audioTrack,
                 ) {
+                    val currentTime = mediaPlayer.time
                     mediaPlayer.audioTrack = track.id
+                    mediaPlayer.time = currentTime
                     updatePlaybackProgress()
                     showSettingsPopup()
                 }

@@ -1,21 +1,21 @@
 package com.lb.asupplayer
 
+import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Parcelable
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -37,6 +37,7 @@ import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.interfaces.IMedia
+import androidx.core.graphics.drawable.toDrawable
 
 class MainActivity : ComponentActivity() {
     private lateinit var libVlc: LibVLC
@@ -99,8 +100,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        currentVideoUri = savedInstanceState?.getVideoUri()
-        externalSubtitleUri = savedInstanceState?.getExternalSubtitleUri()
+        currentVideoUri = savedInstanceState?.getParcelableCompat(KEY_VIDEO_URI)
+        externalSubtitleUri = savedInstanceState?.getParcelableCompat(KEY_SUBTITLE_URI)
         restorePositionMs = savedInstanceState?.getLong(KEY_POSITION_MS) ?: 0L
 
         libVlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames"))
@@ -129,7 +130,7 @@ class MainActivity : ComponentActivity() {
             showPlayerControls()
         }
         playerControls.setOnClickListener {
-            showPlayerControls()
+            hidePlayerControls()
         }
 
         playPauseButton.setOnClickListener {
@@ -218,7 +219,6 @@ class MainActivity : ComponentActivity() {
         applySystemBarsMode(newConfig)
         ViewCompat.requestApplyInsets(controlsContainer)
         applySubtitleSurfaceLayout()
-        updateVideoOutputSize()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -266,7 +266,6 @@ class MainActivity : ComponentActivity() {
             mediaPlayer.media = media
             media.release()
             attachPlayerViews()
-            updateVideoOutputSize()
             applySubtitleSurfaceLayout()
             mediaPlayer.play()
             externalSubtitleUri?.let(::addExternalSubtitle)
@@ -279,26 +278,25 @@ class MainActivity : ComponentActivity() {
                     mediaPlayer.time = startPositionMs
                 }
             }
-        } catch (_: IOException) {
-            currentVideoUri = null
-            openVideoButton.visibility = View.VISIBLE
-            hidePlayerControls()
-            setKeepScreenOn(false)
-            Toast.makeText(this, R.string.video_open_error, Toast.LENGTH_SHORT).show()
-        } catch (_: SecurityException) {
-            currentVideoUri = null
-            openVideoButton.visibility = View.VISIBLE
-            hidePlayerControls()
-            setKeepScreenOn(false)
-            Toast.makeText(this, R.string.video_open_error, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            if (e !is IOException && e !is SecurityException) throw e
+            onVideoOpenFailed()
         }
+    }
+
+    private fun onVideoOpenFailed() {
+        currentVideoUri = null
+        openVideoButton.visibility = View.VISIBLE
+        hidePlayerControls()
+        setKeepScreenOn(false)
+        Toast.makeText(this, R.string.video_open_error, Toast.LENGTH_SHORT).show()
     }
 
     private fun persistReadAccess(uri: Uri) {
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
-                IntentFlags.READ_URI_PERMISSION,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
         } catch (_: SecurityException) {
             // Some providers return one-time access only.
@@ -399,48 +397,9 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
 
-        addSectionTitle(content, getString(R.string.audio_tracks))
-        val audioTracks = mediaPlayer.audioTracks.toTrackMenuItems()
-        if (audioTracks.isEmpty()) {
-            addDisabledRow(content, getString(R.string.tracks_empty))
-        } else {
-            audioTracks.forEach { track ->
-                addMenuRow(
-                    parent = content,
-                    text = track.name.ifBlank { track.id.toString() },
-                    isSelected = track.id == mediaPlayer.audioTrack,
-                ) {
-                    mediaPlayer.audioTrack = track.id
-                    updatePlaybackProgress()
-                    showSettingsPopup()
-                }
-            }
-        }
-
+        addAudioSection(content)
         addDivider(content)
-        addSectionTitle(content, getString(R.string.subtitle_tracks))
-        addMenuRow(
-            parent = content,
-            text = getString(R.string.load_subtitles),
-            isSelected = externalSubtitleUri != null,
-        ) {
-            settingsPopup?.dismiss()
-            openSubtitleDocument.launch(SUBTITLE_MIME_TYPES)
-        }
-        addSubtitleTrackRows(content)
-        addSubtitleSizeRow(content)
-        addSectionTitle(content, getString(R.string.subtitle_position))
-        SubtitlePosition.values().forEach { position ->
-            addMenuRow(
-                parent = content,
-                text = getString(position.labelRes),
-                isSelected = position == subtitlePosition,
-            ) {
-                subtitlePosition = position
-                applySubtitleSurfaceLayout()
-                showSettingsPopup()
-            }
-        }
+        addSubtitleSection(content)
 
         val popupWidth = dp(320)
             .coerceAtMost(resources.displayMetrics.widthPixels - dp(32))
@@ -452,7 +411,7 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             true,
         ).apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
             isOutsideTouchable = true
             elevation = dp(8).toFloat()
             setOnDismissListener {
@@ -469,6 +428,52 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun addAudioSection(parent: LinearLayout) {
+        addSectionTitle(parent, getString(R.string.audio_tracks))
+        val audioTracks = mediaPlayer.audioTracks.toTrackMenuItems()
+        if (audioTracks.isEmpty()) {
+            addDisabledRow(parent, getString(R.string.tracks_empty))
+        } else {
+            audioTracks.forEach { track ->
+                addMenuRow(
+                    parent = parent,
+                    text = track.name.ifBlank { track.id.toString() },
+                    isSelected = track.id == mediaPlayer.audioTrack,
+                ) {
+                    mediaPlayer.audioTrack = track.id
+                    updatePlaybackProgress()
+                    showSettingsPopup()
+                }
+            }
+        }
+    }
+
+    private fun addSubtitleSection(parent: LinearLayout) {
+        addSectionTitle(parent, getString(R.string.subtitle_tracks))
+        addMenuRow(
+            parent = parent,
+            text = getString(R.string.load_subtitles),
+            isSelected = externalSubtitleUri != null,
+        ) {
+            settingsPopup?.dismiss()
+            openSubtitleDocument.launch(SUBTITLE_MIME_TYPES)
+        }
+        addSubtitleTrackRows(parent)
+        addSubtitleSizeRow(parent)
+        addSectionTitle(parent, getString(R.string.subtitle_position))
+        SubtitlePosition.entries.forEach { position ->
+            addMenuRow(
+                parent = parent,
+                text = getString(position.labelRes),
+                isSelected = position == subtitlePosition,
+            ) {
+                subtitlePosition = position
+                applySubtitleSurfaceLayout()
+                showSettingsPopup()
+            }
+        }
+    }
+
     private fun addSectionTitle(parent: LinearLayout, text: String) {
         parent.addView(
             TextView(this).apply {
@@ -478,10 +483,7 @@ class MainActivity : ComponentActivity() {
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 setPadding(dp(8), dp(6), dp(8), dp(4))
             },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+            popupRowParams(),
         )
     }
 
@@ -500,10 +502,7 @@ class MainActivity : ComponentActivity() {
                 setPadding(dp(8), dp(10), dp(8), dp(10))
                 setOnClickListener { onClick() }
             },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+            popupRowParams(),
         )
     }
 
@@ -515,10 +514,7 @@ class MainActivity : ComponentActivity() {
                 textSize = 14f
                 setPadding(dp(8), dp(10), dp(8), dp(10))
             },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+            popupRowParams(),
         )
     }
 
@@ -568,14 +564,13 @@ class MainActivity : ComponentActivity() {
             updateSubtitleSize(SUBTITLE_SIZE_STEP_PERCENT)
         })
 
-        parent.addView(
-            row,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
+        parent.addView(row, popupRowParams())
     }
+
+    private fun popupRowParams() = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+    )
 
     private fun createPopupButton(text: String, onClick: () -> Unit): Button =
         Button(this).apply {
@@ -739,16 +734,19 @@ class MainActivity : ComponentActivity() {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
-            window.decorView.windowInsetsController?.show(WindowInsets.Type.systemBars())
         }
     }
 
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
-    private object IntentFlags {
-        const val READ_URI_PERMISSION = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-    }
+    private inline fun <reified T : Parcelable> Bundle.getParcelableCompat(key: String): T? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelable(key, T::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            getParcelable(key)
+        }
 
     private enum class SubtitlePosition(
         val labelRes: Int,
@@ -765,29 +763,13 @@ class MainActivity : ComponentActivity() {
         val name: String,
     )
 
-    private fun Bundle.getVideoUri(): Uri? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            getParcelable(KEY_VIDEO_URI, Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            getParcelable(KEY_VIDEO_URI)
-        }
-
-    private fun Bundle.getExternalSubtitleUri(): Uri? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            getParcelable(KEY_SUBTITLE_URI, Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            getParcelable(KEY_SUBTITLE_URI)
-        }
-
     private companion object {
         const val KEY_VIDEO_URI = "video_uri"
         const val KEY_SUBTITLE_URI = "subtitle_uri"
         const val KEY_POSITION_MS = "position_ms"
         const val MILLIS_IN_SECOND = 1000L
         const val PROGRESS_UPDATE_INTERVAL_MS = 500L
-        const val CONTROLS_AUTO_HIDE_DELAY_MS = 5000L
+        const val CONTROLS_AUTO_HIDE_DELAY_MS = 2000L
         const val DEFAULT_SUBTITLE_SIZE_PERCENT = 100
         const val MIN_SUBTITLE_SIZE_PERCENT = 75
         const val MAX_SUBTITLE_SIZE_PERCENT = 150

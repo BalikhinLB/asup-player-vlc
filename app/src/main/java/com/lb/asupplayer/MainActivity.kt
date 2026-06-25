@@ -4,7 +4,6 @@ import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.content.res.Configuration
 import android.graphics.Color
-import android.graphics.PixelFormat
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Parcelable
 import android.provider.OpenableColumns
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.SurfaceView
 import android.view.View
@@ -27,23 +27,27 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.lb.asupplayer.subtitle.MkvSubtitleExtractor
+import com.lb.asupplayer.subtitle.SrtParser
+import com.lb.asupplayer.subtitle.SubtitleRenderer
+import com.lb.asupplayer.subtitle.SubtitleTrack
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
-import org.videolan.libvlc.interfaces.IMedia
-import androidx.core.graphics.drawable.toDrawable
 
 class MainActivity : ComponentActivity() {
     private lateinit var libVlc: LibVLC
     private lateinit var mediaPlayer: MediaPlayer
     private lateinit var videoSurfaceView: SurfaceView
-    private lateinit var subtitlesSurfaceView: SurfaceView
     private lateinit var controlsContainer: FrameLayout
     private lateinit var openVideoButton: Button
     private lateinit var playerControls: FrameLayout
@@ -51,12 +55,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var playbackTime: TextView
     private lateinit var playPauseButton: Button
     private lateinit var settingsButton: ImageButton
+    private lateinit var subtitleView: TextView
+    private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
     private var settingsPopup: PopupWindow? = null
     private val controlsHandler = Handler(Looper.getMainLooper())
-    private val hideControlsRunnable = Runnable {
-        hidePlayerControls()
-    }
+    private val hideControlsRunnable = Runnable { hidePlayerControls() }
 
     private var currentVideoUri: Uri? = null
     private var externalSubtitleUri: Uri? = null
@@ -65,6 +69,12 @@ class MainActivity : ComponentActivity() {
     private var knownLengthMs = 0L
     private var subtitleSizePercent = DEFAULT_SUBTITLE_SIZE_PERCENT
     private var subtitlePosition = SubtitlePosition.BOTTOM
+
+    private var internalSubtitleTracks: List<SubtitleTrack> = emptyList()
+    private var externalSubtitleTrack: SubtitleTrack? = null
+    private var activeSubtitleTrack: SubtitleTrack? = null
+    private val subtitleExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    @Volatile private var currentVideoJobId = 0
 
     private val progressUpdater = object : Runnable {
         override fun run() {
@@ -87,13 +97,8 @@ class MainActivity : ComponentActivity() {
             if (uri != null) {
                 persistReadAccess(uri)
                 externalSubtitleUri = uri
-                addExternalSubtitle(uri)
+                parseExternalSubtitle(uri, currentVideoJobId)
                 showPlayerControls()
-                Toast.makeText(
-                    this,
-                    getString(R.string.subtitle_loaded, uri.displayName()),
-                    Toast.LENGTH_SHORT,
-                ).show()
             }
         }
 
@@ -109,7 +114,6 @@ class MainActivity : ComponentActivity() {
 
         setContentView(R.layout.activity_main)
         videoSurfaceView = findViewById(R.id.video_surface)
-        subtitlesSurfaceView = findViewById(R.id.subtitles_surface)
         controlsContainer = findViewById(R.id.controls_container)
         openVideoButton = findViewById(R.id.open_video_button)
         playerControls = findViewById(R.id.player_controls)
@@ -117,10 +121,11 @@ class MainActivity : ComponentActivity() {
         playbackTime = findViewById(R.id.playback_time)
         playPauseButton = findViewById(R.id.play_pause_button)
         settingsButton = findViewById(R.id.settings_button)
+        subtitleView = findViewById(R.id.subtitle_view)
+        subtitleRenderer = SubtitleRenderer(subtitleView)
 
-        subtitlesSurfaceView.setZOrderMediaOverlay(true)
-        subtitlesSurfaceView.holder.setFormat(PixelFormat.TRANSLUCENT)
-        applySubtitleSurfaceLayout()
+        applySubtitlePosition()
+        applySubtitleTextSize()
         attachPlayerViews()
 
         openVideoButton.setOnClickListener {
@@ -132,7 +137,6 @@ class MainActivity : ComponentActivity() {
         playerControls.setOnClickListener {
             hidePlayerControls()
         }
-
         playPauseButton.setOnClickListener {
             togglePlayback()
         }
@@ -218,7 +222,6 @@ class MainActivity : ComponentActivity() {
         super.onConfigurationChanged(newConfig)
         applySystemBarsMode(newConfig)
         ViewCompat.requestApplyInsets(controlsContainer)
-        applySubtitleSurfaceLayout()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -245,6 +248,7 @@ class MainActivity : ComponentActivity() {
         mediaPlayer.release()
         libVlc.release()
         closeCurrentVideoDescriptor()
+        subtitleExecutor.shutdown()
     }
 
     private fun playVideo(uri: Uri, startPositionMs: Long) {
@@ -260,18 +264,25 @@ class MainActivity : ComponentActivity() {
             currentVideoDescriptor = videoDescriptor
             openVideoButton.visibility = View.GONE
 
+            internalSubtitleTracks = emptyList()
+            externalSubtitleTrack = null
+            activeSubtitleTrack = null
+            subtitleRenderer.reset()
+
             val media = Media(libVlc, videoDescriptor)
             applyDecoderOptions(media)
-            applySubtitleMediaOptions(media)
             mediaPlayer.media = media
             media.release()
             attachPlayerViews()
-            applySubtitleSurfaceLayout()
+            applySubtitlePosition()
             mediaPlayer.play()
-            externalSubtitleUri?.let(::addExternalSubtitle)
             updatePlaybackState()
             showPlayerControls()
             startProgressUpdates()
+
+            val jobId = ++currentVideoJobId
+            startMkvSubtitleExtraction(uri, jobId)
+            externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
 
             if (startPositionMs > 0L) {
                 videoSurfaceView.post {
@@ -281,6 +292,51 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             if (e !is IOException && e !is SecurityException) throw e
             onVideoOpenFailed()
+        }
+    }
+
+    private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int) {
+        subtitleExecutor.execute {
+            val fd = try {
+                contentResolver.openFileDescriptor(uri, "r") ?: return@execute
+            } catch (_: Exception) {
+                return@execute
+            }
+            val tracks = fd.use { MkvSubtitleExtractor().extract(it.fileDescriptor) }
+            runOnUiThread {
+                if (currentVideoJobId == jobId) {
+                    internalSubtitleTracks = tracks
+                }
+            }
+        }
+    }
+
+    private fun parseExternalSubtitle(uri: Uri, jobId: Int) {
+        subtitleExecutor.execute {
+            try {
+                val entries = contentResolver.openInputStream(uri)?.use { SrtParser.parse(it) }
+                    ?: emptyList()
+                val name = uri.displayName()
+                val track = SubtitleTrack(EXTERNAL_TRACK_ID, name, entries)
+                runOnUiThread {
+                    if (currentVideoJobId == jobId) {
+                        externalSubtitleTrack = track
+                        activeSubtitleTrack = track
+                        subtitleRenderer.activeTrack = track
+                        Toast.makeText(
+                            this,
+                            getString(R.string.subtitle_loaded, name),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (currentVideoJobId == jobId) {
+                        Toast.makeText(this, R.string.subtitle_open_error, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
 
@@ -314,44 +370,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun attachPlayerViews() {
-        if (mediaPlayer.vlcVout.areViewsAttached()) {
-            return
-        }
-
+        if (mediaPlayer.vlcVout.areViewsAttached()) return
         mediaPlayer.vlcVout.setVideoView(videoSurfaceView)
-        mediaPlayer.vlcVout.setSubtitlesView(subtitlesSurfaceView)
         mediaPlayer.vlcVout.attachViews()
     }
 
-    private fun applySubtitleSurfaceLayout() {
-        val playerHeight = controlsContainer.height
-            .takeIf { it > 0 }
-            ?: resources.displayMetrics.heightPixels
-        val surfaceHeight = (playerHeight * subtitlePosition.surfaceHeightPercent) / 100
-        val scale = subtitleSizePercent / 100f
-
-        subtitlesSurfaceView.layoutParams = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            surfaceHeight.coerceAtLeast(dp(1)),
-        ).apply {
-            gravity = Gravity.TOP
-        }
-        subtitlesSurfaceView.pivotX = resources.displayMetrics.widthPixels / 2f
-        subtitlesSurfaceView.pivotY = when (subtitlePosition) {
-            SubtitlePosition.TOP -> 0f
-            SubtitlePosition.CENTER -> surfaceHeight / 2f
-            SubtitlePosition.BOTTOM -> surfaceHeight.toFloat()
-        }
-        subtitlesSurfaceView.scaleX = scale
-        subtitlesSurfaceView.scaleY = scale
-        updateVideoOutputSize()
+    private fun applySubtitlePosition() {
+        val params = subtitleView.layoutParams as FrameLayout.LayoutParams
+        params.gravity = subtitlePosition.gravity
+        params.topMargin = if (subtitlePosition == SubtitlePosition.TOP) dp(16) else 0
+        params.bottomMargin = if (subtitlePosition == SubtitlePosition.BOTTOM) dp(80) else 0
+        subtitleView.layoutParams = params
     }
 
-    private fun applySubtitleMediaOptions(media: Media) {
-        val fontSize = (DEFAULT_VLC_SUBTITLE_FONT_SIZE * subtitleSizePercent) /
-            DEFAULT_SUBTITLE_SIZE_PERCENT
-        media.addOption(":freetype-rel-fontsize=${fontSize.coerceIn(8, 32)}")
-        media.addOption(":sub-margin=${dp(subtitlePosition.bottomMarginDp)}")
+    private fun applySubtitleTextSize() {
+        subtitleView.setTextSize(
+            TypedValue.COMPLEX_UNIT_SP,
+            BASE_SUBTITLE_SP * subtitleSizePercent / 100f,
+        )
     }
 
     private fun applyDecoderOptions(media: Media) {
@@ -470,7 +506,35 @@ class MainActivity : ComponentActivity() {
                 isSelected = position == subtitlePosition,
             ) {
                 subtitlePosition = position
-                applySubtitleSurfaceLayout()
+                applySubtitlePosition()
+                showSettingsPopup()
+            }
+        }
+    }
+
+    private fun addSubtitleTrackRows(parent: LinearLayout) {
+        val tracks = internalSubtitleTracks + listOfNotNull(externalSubtitleTrack)
+        if (tracks.isEmpty()) {
+            addDisabledRow(parent, getString(R.string.tracks_empty))
+            return
+        }
+        addMenuRow(
+            parent = parent,
+            text = getString(R.string.subtitles_off),
+            isSelected = activeSubtitleTrack == null,
+        ) {
+            activeSubtitleTrack = null
+            subtitleRenderer.activeTrack = null
+            showSettingsPopup()
+        }
+        tracks.forEach { track ->
+            addMenuRow(
+                parent = parent,
+                text = track.name,
+                isSelected = track.id == activeSubtitleTrack?.id,
+            ) {
+                activeSubtitleTrack = track
+                subtitleRenderer.activeTrack = track
                 showSettingsPopup()
             }
         }
@@ -588,39 +652,8 @@ class MainActivity : ComponentActivity() {
     private fun updateSubtitleSize(deltaPercent: Int) {
         subtitleSizePercent = (subtitleSizePercent + deltaPercent)
             .coerceIn(MIN_SUBTITLE_SIZE_PERCENT, MAX_SUBTITLE_SIZE_PERCENT)
-        applySubtitleSurfaceLayout()
+        applySubtitleTextSize()
         showSettingsPopup()
-    }
-
-    private fun addSubtitleTrackRows(parent: LinearLayout) {
-        val subtitleTracks = subtitleTracksWithOff()
-        if (subtitleTracks.isEmpty()) {
-            addDisabledRow(parent, getString(R.string.tracks_empty))
-            return
-        }
-
-        subtitleTracks.forEach { track ->
-            addMenuRow(
-                parent = parent,
-                text = track.name.ifBlank { track.id.toString() },
-                isSelected = track.id == mediaPlayer.spuTrack,
-            ) {
-                mediaPlayer.spuTrack = track.id
-                updatePlaybackProgress()
-                showSettingsPopup()
-            }
-        }
-    }
-
-    private fun subtitleTracksWithOff(): List<TrackMenuItem> =
-        listOf(TrackMenuItem(DISABLED_TRACK_ID, getString(R.string.subtitles_off))) +
-            mediaPlayer.spuTracks.toTrackMenuItems()
-
-    private fun addExternalSubtitle(uri: Uri) {
-        val added = mediaPlayer.addSlave(IMedia.Slave.Type.Subtitle, uri, true)
-        if (!added) {
-            Toast.makeText(this, R.string.subtitle_open_error, Toast.LENGTH_SHORT).show()
-        }
     }
 
     private fun Uri.displayName(): String {
@@ -650,10 +683,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showPlayerControls() {
-        if (currentVideoUri == null) {
-            return
-        }
-
+        if (currentVideoUri == null) return
         playerControls.visibility = View.VISIBLE
         scheduleControlsAutoHide()
     }
@@ -684,6 +714,7 @@ class MainActivity : ComponentActivity() {
         }
         updatePlaybackTime(currentTimeMs, knownLengthMs)
         updatePlaybackState()
+        subtitleRenderer.onTimeChanged(currentTimeMs)
     }
 
     private fun updatePlaybackTime(currentTimeMs: Long, lengthMs: Long) {
@@ -750,20 +781,13 @@ class MainActivity : ComponentActivity() {
             getParcelable(key)
         }
 
-    private enum class SubtitlePosition(
-        val labelRes: Int,
-        val surfaceHeightPercent: Int,
-        val bottomMarginDp: Int,
-    ) {
-        TOP(R.string.subtitle_position_top, surfaceHeightPercent = 32, bottomMarginDp = 420),
-        CENTER(R.string.subtitle_position_center, surfaceHeightPercent = 60, bottomMarginDp = 180),
-        BOTTOM(R.string.subtitle_position_bottom, surfaceHeightPercent = 100, bottomMarginDp = 32),
+    private enum class SubtitlePosition(val labelRes: Int, val gravity: Int) {
+        TOP(R.string.subtitle_position_top, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
+        CENTER(R.string.subtitle_position_center, Gravity.CENTER),
+        BOTTOM(R.string.subtitle_position_bottom, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL),
     }
 
-    private data class TrackMenuItem(
-        val id: Int,
-        val name: String,
-    )
+    private data class TrackMenuItem(val id: Int, val name: String)
 
     private companion object {
         const val KEY_VIDEO_URI = "video_uri"
@@ -776,8 +800,8 @@ class MainActivity : ComponentActivity() {
         const val MIN_SUBTITLE_SIZE_PERCENT = 75
         const val MAX_SUBTITLE_SIZE_PERCENT = 150
         const val SUBTITLE_SIZE_STEP_PERCENT = 10
-        const val DEFAULT_VLC_SUBTITLE_FONT_SIZE = 16
-        const val DISABLED_TRACK_ID = -1
+        const val BASE_SUBTITLE_SP = 18f
+        const val EXTERNAL_TRACK_ID = Int.MAX_VALUE
         const val SECONDS_IN_HOUR = 3600L
         const val SECONDS_IN_MINUTE = 60L
         val SUBTITLE_MIME_TYPES = arrayOf(

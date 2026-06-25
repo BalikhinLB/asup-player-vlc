@@ -234,12 +234,20 @@ class MainActivity : ComponentActivity() {
         outState.putLong(KEY_POSITION_MS, mediaPlayer.time.coerceAtLeast(0L))
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (currentVideoUri != null) {
+            attachPlayerViews()
+        }
+    }
+
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
             mediaPlayer.pause()
             setKeepScreenOn(false)
         }
+        mediaPlayer.vlcVout.detachViews()
     }
 
     override fun onDestroy() {

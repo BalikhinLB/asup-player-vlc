@@ -20,4 +20,6 @@
     <string name="subtitle_loaded">Субтитры загружены: %1$s</string>
     <string name="subtitle_open_error">Не удалось открыть субтитры</string>
     <string name="subtitle_indexing">Индексирование субтитров…</string>
+    <string name="recent_files">Недавние</string>
+    <string name="open_file">Открыть файл</string>
 </resources>

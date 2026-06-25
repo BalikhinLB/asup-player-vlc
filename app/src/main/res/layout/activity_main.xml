@@ -84,18 +84,46 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/open_video_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="@string/find_video" />
+        <LinearLayout
+            android:id="@+id/home_screen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <LinearLayout
+                android:id="@+id/recent_files_list"
+                android:layout_width="320dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/open_video_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/find_video" />
+        </LinearLayout>
 
         <FrameLayout
             android:id="@+id/player_controls"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:visibility="gone">
+
+            <ImageButton
+                android:id="@+id/open_in_player_button"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="4dp"
+                android:background="@drawable/bg_settings_button"
+                android:contentDescription="@string/open_file"
+                android:padding="12dp"
+                android:src="@drawable/ic_open_video"
+                android:tint="@android:color/white" />
 
             <Button
                 android:id="@+id/play_pause_button"

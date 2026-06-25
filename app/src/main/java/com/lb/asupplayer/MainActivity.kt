@@ -20,6 +20,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.text.TextUtils
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -64,8 +65,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
     private var settingsPopup: PopupWindow? = null
+    private var openFilePopup: PopupWindow? = null
     private val controlsHandler = Handler(Looper.getMainLooper())
     private val hideControlsRunnable = Runnable { hidePlayerControls() }
+
+    private lateinit var recentFilesStore: RecentFilesStore
+    private lateinit var homeScreen: LinearLayout
+    private lateinit var recentFilesList: LinearLayout
+    private lateinit var openInPlayerButton: ImageButton
+    private var currentVideoName: String = ""
+    private var pendingSubtitleTrackId: Int = -1
+    private var pendingAudioTrackId: Int = RecentFile.AUDIO_NOT_SET
+    private var coverHomeScreenUntilPlaying: Boolean = false
 
     private var currentVideoUri: Uri? = null
     private var externalSubtitleUri: Uri? = null
@@ -127,11 +138,16 @@ class MainActivity : ComponentActivity() {
         libVlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames"))
         mediaPlayer = MediaPlayer(libVlc)
 
+        recentFilesStore = RecentFilesStore(this)
+
         setContentView(R.layout.activity_main)
         videoSurfaceView = findViewById(R.id.video_surface)
         controlsContainer = findViewById(R.id.controls_container)
+        homeScreen = findViewById(R.id.home_screen)
+        recentFilesList = findViewById(R.id.recent_files_list)
         openVideoButton = findViewById(R.id.open_video_button)
         playerControls = findViewById(R.id.player_controls)
+        openInPlayerButton = findViewById(R.id.open_in_player_button)
         playbackSeek = findViewById(R.id.playback_seek)
         playbackTime = findViewById(R.id.playback_time)
         playPauseButton = findViewById(R.id.play_pause_button)
@@ -142,12 +158,14 @@ class MainActivity : ComponentActivity() {
         bottomControls = findViewById(R.id.bottom_controls)
         subtitleRenderer = SubtitleRenderer(subtitleView)
 
+        populateHomeScreen()
+
         doubleTapDetector = GestureDetector(
             this,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
-                    val onButton = playPauseButton.containsRaw(e) || bottomControls.containsRaw(e)
+                    val onButton = playPauseButton.containsRaw(e) || bottomControls.containsRaw(e) || openInPlayerButton.containsRaw(e)
                     if (playerControls.visibility == View.VISIBLE && !onButton) {
                         hidePlayerControls()
                     } else {
@@ -186,6 +204,9 @@ class MainActivity : ComponentActivity() {
         openVideoButton.setOnClickListener {
             openDocument.launch(arrayOf("video/*"))
         }
+        openInPlayerButton.setOnClickListener {
+            showOpenFilePopup()
+        }
         playPauseButton.setOnClickListener {
             togglePlayback()
         }
@@ -219,6 +240,16 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 when (event.type) {
                     MediaPlayer.Event.Playing -> {
+                        if (pendingAudioTrackId != RecentFile.AUDIO_NOT_SET) {
+                            val t = mediaPlayer.time
+                            mediaPlayer.audioTrack = pendingAudioTrackId
+                            pendingAudioTrackId = RecentFile.AUDIO_NOT_SET
+                            if (t > 0L) mediaPlayer.time = t
+                        }
+                        if (coverHomeScreenUntilPlaying) {
+                            homeScreen.visibility = View.GONE
+                            coverHomeScreenUntilPlaying = false
+                        }
                         showPlayerControls()
                         setKeepScreenOn(true)
                         updatePlaybackState()
@@ -263,7 +294,17 @@ class MainActivity : ComponentActivity() {
         applySystemBarsMode(resources.configuration)
 
         currentVideoUri?.let { uri ->
-            playVideo(uri, restorePositionMs)
+            val cached = recentFilesStore.loadSubtitles(uri)
+            recentFilesStore.getAll().find { it.uri == uri }?.let { recent ->
+                subtitleSizePercent = recent.subtitleSizePercent
+                subtitlePosition = SubtitlePosition.values()
+                    .getOrElse(recent.subtitlePositionOrdinal) { SubtitlePosition.BOTTOM }
+                pendingSubtitleTrackId = recent.activeSubtitleTrackId
+                pendingAudioTrackId = recent.audioTrackId
+                applySubtitleTextSize()
+                applySubtitlePosition()
+            }
+            playVideo(uri, restorePositionMs, cached)
         }
     }
 
@@ -284,6 +325,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
+            saveCurrentSettings()
             mediaPlayer.pause()
             setKeepScreenOn(false)
         }
@@ -297,6 +339,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         settingsPopup?.dismiss()
+        openFilePopup?.dismiss()
         controlsHandler.removeCallbacks(progressUpdater)
         controlsHandler.removeCallbacks(hideControlsRunnable)
         mediaPlayer.vlcVout.detachViews()
@@ -306,7 +349,7 @@ class MainActivity : ComponentActivity() {
         subtitleExecutor.shutdown()
     }
 
-    private fun playVideo(uri: Uri, startPositionMs: Long) {
+    private fun playVideo(uri: Uri, startPositionMs: Long, cachedSubtitles: List<SubtitleTrack>? = null) {
         try {
             val videoDescriptor = contentResolver.openAssetFileDescriptor(uri, "r")
                 ?: throw IOException("Content resolver returned null descriptor for $uri")
@@ -315,9 +358,10 @@ class MainActivity : ComponentActivity() {
             closeCurrentVideoDescriptor()
 
             currentVideoUri = uri
+            currentVideoName = uri.displayName()
             restorePositionMs = startPositionMs
             currentVideoDescriptor = videoDescriptor
-            openVideoButton.visibility = View.GONE
+            coverHomeScreenUntilPlaying = false
 
             internalSubtitleTracks = emptyList()
             externalSubtitleTrack = null
@@ -326,15 +370,37 @@ class MainActivity : ComponentActivity() {
 
             val media = Media(libVlc, videoDescriptor)
             applyDecoderOptions(media)
+            if (startPositionMs > 0L) {
+                media.addOption(":start-time=${startPositionMs / 1000.0}")
+            }
             mediaPlayer.media = media
             media.release()
             attachPlayerViews()
             applySubtitlePosition()
 
             val jobId = ++currentVideoJobId
-            indexingFileNameView.text = uri.displayName()
-            subtitleIndexingIndicator.visibility = View.VISIBLE
-            startMkvSubtitleExtraction(uri, jobId, startPositionMs)
+            indexingFileNameView.text = currentVideoName
+
+            if (cachedSubtitles != null) {
+                internalSubtitleTracks = cachedSubtitles
+                if (pendingSubtitleTrackId >= 0) {
+                    activeSubtitleTrack = cachedSubtitles.find { it.id == pendingSubtitleTrackId }
+                    pendingSubtitleTrackId = -1
+                }
+                subtitleRenderer.activeTrack = activeSubtitleTrack
+                applySubtitleTextSize()
+                subtitleIndexingIndicator.visibility = View.GONE
+                // Keep homeScreen visible as a cover until VLC fires Event.Playing,
+                // so the user sees no black flash while VLC seeks to start-time.
+                coverHomeScreenUntilPlaying = (homeScreen.visibility == View.VISIBLE)
+                mediaPlayer.play()
+                updatePlaybackState()
+                startProgressUpdates()
+            } else {
+                homeScreen.visibility = View.GONE
+                subtitleIndexingIndicator.visibility = View.VISIBLE
+                startMkvSubtitleExtraction(uri, jobId, startPositionMs)
+            }
             externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
         } catch (e: Exception) {
             if (e !is IOException && e !is SecurityException) throw e
@@ -353,13 +419,18 @@ class MainActivity : ComponentActivity() {
                 subtitleIndexingIndicator.visibility = View.GONE
                 if (currentVideoJobId == jobId) {
                     internalSubtitleTracks = tracks
+                    recentFilesStore.save(
+                        uri = uri,
+                        name = currentVideoName,
+                        positionMs = 0L,
+                        tracks = tracks,
+                        subtitleSizePercent = subtitleSizePercent,
+                        subtitlePositionOrdinal = subtitlePosition.ordinal,
+                    )
                     mediaPlayer.play()
                     updatePlaybackState()
                     showPlayerControls()
                     startProgressUpdates()
-                    if (startPositionMs > 0L) {
-                        videoSurfaceView.post { mediaPlayer.time = startPositionMs }
-                    }
                 }
             }
         }
@@ -396,8 +467,9 @@ class MainActivity : ComponentActivity() {
 
     private fun onVideoOpenFailed() {
         currentVideoUri = null
+        coverHomeScreenUntilPlaying = false
         subtitleIndexingIndicator.visibility = View.GONE
-        openVideoButton.visibility = View.VISIBLE
+        homeScreen.visibility = View.VISIBLE
         hidePlayerControls()
         setKeepScreenOn(false)
         Toast.makeText(this, R.string.video_open_error, Toast.LENGTH_SHORT).show()
@@ -523,6 +595,155 @@ class MainActivity : ComponentActivity() {
         if (idx >= 0) phraseSeekTo(track.entries[idx].startMs)
     }
 
+    private fun playRecentFile(recent: RecentFile) {
+        openFilePopup?.dismiss()
+        recentFilesStore.moveToFront(recent.uri)
+        val cached = recentFilesStore.loadSubtitles(recent.uri)
+        externalSubtitleUri = null
+        subtitleSizePercent = recent.subtitleSizePercent
+        subtitlePosition = SubtitlePosition.values()
+            .getOrElse(recent.subtitlePositionOrdinal) { SubtitlePosition.BOTTOM }
+        pendingSubtitleTrackId = recent.activeSubtitleTrackId
+        pendingAudioTrackId = recent.audioTrackId
+        applySubtitleTextSize()
+        applySubtitlePosition()
+        playVideo(recent.uri, recent.lastPositionMs, cached)
+    }
+
+    private fun populateHomeScreen() {
+        val recents = recentFilesStore.getAll()
+        recentFilesList.removeAllViews()
+        if (recents.isEmpty()) {
+            recentFilesList.visibility = View.GONE
+        } else {
+            addSectionTitle(recentFilesList, getString(R.string.recent_files))
+            recents.forEach { addHomeRecentRow(it) }
+            recentFilesList.visibility = View.VISIBLE
+        }
+    }
+
+    private fun addHomeRecentRow(recent: RecentFile) {
+        val rippleAttr = TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackground, rippleAttr, true)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            setBackgroundResource(rippleAttr.resourceId)
+            isClickable = true
+            setOnClickListener { playRecentFile(recent) }
+        }
+        row.addView(
+            TextView(this).apply {
+                text = recent.displayName
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.MIDDLE
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        if (recent.lastPositionMs > 0L) {
+            row.addView(
+                TextView(this).apply {
+                    text = "с ${formatTime(recent.lastPositionMs)}"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 13f
+                },
+            )
+        }
+        recentFilesList.addView(row, popupRowParams())
+    }
+
+    private fun showOpenFilePopup() {
+        openFilePopup?.dismiss()
+        cancelControlsAutoHide()
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_player_popup)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+
+        addMenuRow(content, getString(R.string.open_file), false) {
+            openFilePopup?.dismiss()
+            openDocument.launch(arrayOf("video/*"))
+        }
+
+        val recents = recentFilesStore.getAll()
+        if (recents.isNotEmpty()) {
+            addDivider(content)
+            addSectionTitle(content, getString(R.string.recent_files))
+            recents.forEach { addRecentPopupRow(content, it) }
+        }
+
+        val popupWidth = dp(320)
+            .coerceAtMost(resources.displayMetrics.widthPixels - dp(32))
+            .coerceAtLeast(dp(240))
+
+        openFilePopup = PopupWindow(
+            content,
+            popupWidth,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true,
+        ).apply {
+            setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
+            isOutsideTouchable = true
+            elevation = dp(8).toFloat()
+            setOnDismissListener {
+                openFilePopup = null
+                scheduleControlsAutoHide()
+            }
+        }
+
+        openFilePopup?.showAtLocation(
+            controlsContainer,
+            Gravity.TOP or Gravity.END,
+            dp(8),
+            dp(64),
+        )
+    }
+
+    private fun addRecentPopupRow(parent: LinearLayout, recent: RecentFile) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { playRecentFile(recent) }
+        }
+        row.addView(
+            TextView(this).apply {
+                text = recent.displayName
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.MIDDLE
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        if (recent.lastPositionMs > 0L) {
+            row.addView(
+                TextView(this).apply {
+                    text = "с ${formatTime(recent.lastPositionMs)}"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 12f
+                },
+            )
+        }
+        parent.addView(row, popupRowParams())
+    }
+
+    private fun saveCurrentSettings() {
+        currentVideoUri?.let { uri ->
+            recentFilesStore.updatePlaybackState(
+                uri = uri,
+                positionMs = mediaPlayer.time.coerceAtLeast(0L),
+                activeSubtitleTrackId = activeSubtitleTrack?.id ?: -1,
+                audioTrackId = mediaPlayer.audioTrack,
+                subtitleSizePercent = subtitleSizePercent,
+                subtitlePositionOrdinal = subtitlePosition.ordinal,
+            )
+        }
+    }
+
     private fun showSettingsPopup() {
         settingsPopup?.dismiss()
         cancelControlsAutoHide()
@@ -580,6 +801,7 @@ class MainActivity : ComponentActivity() {
                     mediaPlayer.audioTrack = track.id
                     mediaPlayer.time = currentTime
                     updatePlaybackProgress()
+                    saveCurrentSettings()
                     showSettingsPopup()
                 }
             }
@@ -607,6 +829,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 subtitlePosition = position
                 applySubtitlePosition()
+                saveCurrentSettings()
                 showSettingsPopup()
             }
         }
@@ -625,6 +848,7 @@ class MainActivity : ComponentActivity() {
         ) {
             activeSubtitleTrack = null
             subtitleRenderer.activeTrack = null
+            saveCurrentSettings()
             showSettingsPopup()
         }
         tracks.forEach { track ->
@@ -635,6 +859,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 activeSubtitleTrack = track
                 subtitleRenderer.activeTrack = track
+                saveCurrentSettings()
                 showSettingsPopup()
             }
         }
@@ -753,6 +978,7 @@ class MainActivity : ComponentActivity() {
         subtitleSizePercent = (subtitleSizePercent + deltaPercent)
             .coerceIn(MIN_SUBTITLE_SIZE_PERCENT, MAX_SUBTITLE_SIZE_PERCENT)
         applySubtitleTextSize()
+        saveCurrentSettings()
         showSettingsPopup()
     }
 

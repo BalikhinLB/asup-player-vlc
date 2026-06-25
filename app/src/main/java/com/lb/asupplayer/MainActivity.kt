@@ -12,7 +12,9 @@ import android.os.Looper
 import android.os.Parcelable
 import android.provider.OpenableColumns
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -80,6 +82,15 @@ class MainActivity : ComponentActivity() {
     private val subtitleExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     @Volatile private var currentVideoJobId = 0
 
+    private lateinit var bottomControls: View
+    private lateinit var doubleTapDetector: GestureDetector
+
+    private var phraseSeekTargetMs = -1L
+    private val clearPhraseSeekRunnable = Runnable {
+        phraseSeekTargetMs = -1L
+        updatePlaybackProgress()
+    }
+
     private val progressUpdater = object : Runnable {
         override fun run() {
             updatePlaybackProgress()
@@ -128,7 +139,30 @@ class MainActivity : ComponentActivity() {
         subtitleView = findViewById(R.id.subtitle_view)
         subtitleIndexingIndicator = findViewById(R.id.subtitle_indexing_indicator)
         indexingFileNameView = findViewById(R.id.indexing_file_name)
+        bottomControls = findViewById(R.id.bottom_controls)
         subtitleRenderer = SubtitleRenderer(subtitleView)
+
+        doubleTapDetector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    if (currentVideoUri == null) return false
+                    val onButton = playPauseButton.containsRaw(e) || bottomControls.containsRaw(e)
+                    if (playerControls.visibility == View.VISIBLE && !onButton) {
+                        hidePlayerControls()
+                    } else {
+                        showPlayerControls()
+                    }
+                    return true
+                }
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    if (currentVideoUri == null) return false
+                    if (e.x < controlsContainer.width / 2f) seekToPrevPhrase()
+                    else seekToNextPhrase()
+                    return true
+                }
+            },
+        )
 
         applySubtitlePosition()
         applySubtitleTextSize()
@@ -151,12 +185,6 @@ class MainActivity : ComponentActivity() {
 
         openVideoButton.setOnClickListener {
             openDocument.launch(arrayOf("video/*"))
-        }
-        controlsContainer.setOnClickListener {
-            showPlayerControls()
-        }
-        playerControls.setOnClickListener {
-            hidePlayerControls()
         }
         playPauseButton.setOnClickListener {
             togglePlayback()
@@ -259,6 +287,11 @@ class MainActivity : ComponentActivity() {
             mediaPlayer.pause()
             setKeepScreenOn(false)
         }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        doubleTapDetector.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onDestroy() {
@@ -446,6 +479,48 @@ class MainActivity : ComponentActivity() {
             showPlayerControls()
         }
         updatePlaybackState()
+    }
+
+    private fun phraseSeekTo(targetMs: Long) {
+        phraseSeekTargetMs = targetMs
+        mediaPlayer.time = targetMs
+        subtitleRenderer.onTimeChanged(targetMs)
+        controlsHandler.removeCallbacks(clearPhraseSeekRunnable)
+        controlsHandler.postDelayed(clearPhraseSeekRunnable, PHRASE_SEEK_SUPPRESS_MS)
+    }
+
+    private fun seekToPrevPhrase() {
+        val track = activeSubtitleTrack
+        if (track == null) {
+            phraseSeekTo((mediaPlayer.time - PHRASE_SEEK_FALLBACK_MS).coerceAtLeast(0L))
+            return
+        }
+        val currentMs = mediaPlayer.time
+        val entries = track.entries
+        val idx = entries.lastIdxAtOrBefore(currentMs)
+        if (idx < 0) {
+            phraseSeekTo(0L)
+            return
+        }
+        val candidate = entries[idx]
+        val targetMs = if (currentMs - candidate.startMs > PHRASE_REPLAY_THRESHOLD_MS) {
+            candidate.startMs
+        } else {
+            if (idx > 0) entries[idx - 1].startMs else candidate.startMs
+        }
+        phraseSeekTo(targetMs)
+    }
+
+    private fun seekToNextPhrase() {
+        val track = activeSubtitleTrack
+        if (track == null) {
+            val target = mediaPlayer.time + PHRASE_SEEK_FALLBACK_MS
+            phraseSeekTo(if (knownLengthMs > 0L) target.coerceAtMost(knownLengthMs) else target)
+            return
+        }
+        val currentMs = mediaPlayer.time
+        val idx = track.entries.firstIdxAfter(currentMs)
+        if (idx >= 0) phraseSeekTo(track.entries[idx].startMs)
     }
 
     private fun showSettingsPopup() {
@@ -739,7 +814,7 @@ class MainActivity : ComponentActivity() {
         }
         updatePlaybackTime(currentTimeMs, knownLengthMs)
         updatePlaybackState()
-        subtitleRenderer.onTimeChanged(currentTimeMs)
+        if (phraseSeekTargetMs < 0L) subtitleRenderer.onTimeChanged(currentTimeMs)
     }
 
     private fun updatePlaybackTime(currentTimeMs: Long, lengthMs: Long) {
@@ -795,6 +870,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun View.containsRaw(e: MotionEvent): Boolean {
+        val loc = IntArray(2)
+        getLocationOnScreen(loc)
+        return e.rawX >= loc[0] && e.rawX <= loc[0] + width &&
+               e.rawY >= loc[1] && e.rawY <= loc[1] + height
+    }
+
+    /** Last index where startMs <= ms, or -1. */
+    private fun List<com.lb.asupplayer.subtitle.SubtitleEntry>.lastIdxAtOrBefore(ms: Long): Int {
+        var lo = 0; var hi = size - 1; var found = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (this[mid].startMs <= ms) { found = mid; lo = mid + 1 } else hi = mid - 1
+        }
+        return found
+    }
+
+    /** First index where startMs > ms, or -1. */
+    private fun List<com.lb.asupplayer.subtitle.SubtitleEntry>.firstIdxAfter(ms: Long): Int {
+        var lo = 0; var hi = size - 1; var found = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (this[mid].startMs > ms) { found = mid; hi = mid - 1 } else lo = mid + 1
+        }
+        return found
+    }
+
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
@@ -827,6 +929,9 @@ class MainActivity : ComponentActivity() {
         const val SUBTITLE_SIZE_STEP_PERCENT = 10
         const val BASE_SUBTITLE_SP = 18f
         const val EXTERNAL_TRACK_ID = Int.MAX_VALUE
+        const val PHRASE_REPLAY_THRESHOLD_MS = 1_500L
+        const val PHRASE_SEEK_FALLBACK_MS = 10_000L
+        const val PHRASE_SEEK_SUPPRESS_MS = 600L
         const val SECONDS_IN_HOUR = 3600L
         const val SECONDS_IN_MINUTE = 60L
         val SUBTITLE_MIME_TYPES = arrayOf(

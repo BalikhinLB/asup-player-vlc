@@ -2,6 +2,7 @@ package com.lb.asupplayer.subtitle
 
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.util.Log
 import java.io.FileDescriptor
 import java.nio.ByteBuffer
 
@@ -12,7 +13,8 @@ class MkvSubtitleExtractor {
         return try {
             extractor.setDataSource(fd)
             findTracks(extractor)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Subtitle extraction failed", e)
             emptyList()
         } finally {
             extractor.release()
@@ -23,9 +25,11 @@ class MkvSubtitleExtractor {
         val result = mutableListOf<SubtitleTrack>()
         var nextId = 0
 
+        Log.d(TAG, "Total tracks in container: ${extractor.trackCount}")
         for (i in 0 until extractor.trackCount) {
             val format = extractor.getTrackFormat(i)
             val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+            Log.d(TAG, "Track $i: mime=$mime")
             if (!isTextSubtitle(mime)) continue
 
             val name = format.getString(MediaFormat.KEY_LANGUAGE)
@@ -33,6 +37,7 @@ class MkvSubtitleExtractor {
                 ?: "Track ${nextId + 1}"
 
             val entries = readEntries(extractor, i)
+            Log.d(TAG, "Subtitle track '$name': ${entries.size} entries")
             if (entries.isNotEmpty()) {
                 result.add(SubtitleTrack(nextId++, name, entries))
             }
@@ -78,6 +83,7 @@ class MkvSubtitleExtractor {
     }
 
     companion object {
+        private const val TAG = "MkvSubtitles"
         private const val BUFFER_SIZE = 64 * 1024
         private const val DEFAULT_DURATION_MS = 3_000L
     }

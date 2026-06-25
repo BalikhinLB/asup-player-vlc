@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var playPauseButton: Button
     private lateinit var settingsButton: ImageButton
     private lateinit var subtitleView: TextView
+    private lateinit var subtitleIndexingIndicator: View
     private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
     private var settingsPopup: PopupWindow? = null
@@ -122,6 +123,7 @@ class MainActivity : ComponentActivity() {
         playPauseButton = findViewById(R.id.play_pause_button)
         settingsButton = findViewById(R.id.settings_button)
         subtitleView = findViewById(R.id.subtitle_view)
+        subtitleIndexingIndicator = findViewById(R.id.subtitle_indexing_indicator)
         subtitleRenderer = SubtitleRenderer(subtitleView)
 
         applySubtitlePosition()
@@ -222,6 +224,7 @@ class MainActivity : ComponentActivity() {
         super.onConfigurationChanged(newConfig)
         applySystemBarsMode(newConfig)
         ViewCompat.requestApplyInsets(controlsContainer)
+        updateVideoOutputSize()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -296,17 +299,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int) {
+        subtitleIndexingIndicator.visibility = View.VISIBLE
         subtitleExecutor.execute {
             val fd = try {
-                contentResolver.openFileDescriptor(uri, "r") ?: return@execute
+                contentResolver.openFileDescriptor(uri, "r")
             } catch (_: Exception) {
-                return@execute
+                null
             }
-            val tracks = fd.use { MkvSubtitleExtractor().extract(it.fileDescriptor) }
+            val tracks = fd?.use { MkvSubtitleExtractor().extract(it.fileDescriptor) } ?: emptyList()
             runOnUiThread {
                 if (currentVideoJobId == jobId) {
                     internalSubtitleTracks = tracks
                 }
+                subtitleIndexingIndicator.visibility = View.GONE
             }
         }
     }
@@ -342,6 +347,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onVideoOpenFailed() {
         currentVideoUri = null
+        subtitleIndexingIndicator.visibility = View.GONE
         openVideoButton.visibility = View.VISIBLE
         hidePlayerControls()
         setKeepScreenOn(false)
@@ -373,6 +379,7 @@ class MainActivity : ComponentActivity() {
         if (mediaPlayer.vlcVout.areViewsAttached()) return
         mediaPlayer.vlcVout.setVideoView(videoSurfaceView)
         mediaPlayer.vlcVout.attachViews()
+        updateVideoOutputSize()
     }
 
     private fun applySubtitlePosition() {

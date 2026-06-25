@@ -19,4 +19,5 @@
     <string name="video_open_error">Не удалось открыть видео</string>
     <string name="subtitle_loaded">Субтитры загружены: %1$s</string>
     <string name="subtitle_open_error">Не удалось открыть субтитры</string>
+    <string name="subtitle_indexing">Индексирование субтитров…</string>
 </resources>

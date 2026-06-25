@@ -12,9 +12,6 @@
     <string name="player_menu">Меню плеера</string>
     <string name="subtitle_size">Размер</string>
     <string name="subtitle_position">Положение</string>
-    <string name="subtitle_position_top">Верх</string>
-    <string name="subtitle_position_center">Центр</string>
-    <string name="subtitle_position_bottom">Низ</string>
     <string name="playback_time_placeholder">00:00 / 00:00</string>
     <string name="video_open_error">Не удалось открыть видео</string>
     <string name="subtitle_loaded">Субтитры загружены: %1$s</string>
@@ -22,4 +19,5 @@
     <string name="subtitle_indexing">Индексирование субтитров…</string>
     <string name="recent_files">Недавние</string>
     <string name="open_file">Открыть файл</string>
+    <string name="subtitle_visibility">Видимость субтитров</string>
 </resources>

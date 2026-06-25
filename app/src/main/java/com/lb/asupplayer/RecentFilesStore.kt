@@ -15,12 +15,12 @@ data class RecentFile(
     val activeSubtitleTrackId: Int = -1,      // -1 = subtitles off
     val audioTrackId: Int = AUDIO_NOT_SET,     // AUDIO_NOT_SET = don't restore
     val subtitleSizePercent: Int = DEFAULT_SUB_SIZE,
-    val subtitlePositionOrdinal: Int = DEFAULT_SUB_POS,
+    val subtitlePositionPercent: Int = DEFAULT_SUB_POS,
 ) {
     companion object {
         const val AUDIO_NOT_SET = Int.MIN_VALUE
         const val DEFAULT_SUB_SIZE = 100
-        const val DEFAULT_SUB_POS = 2  // SubtitlePosition.BOTTOM.ordinal
+        const val DEFAULT_SUB_POS = 0  // 0 = bottom
     }
 }
 
@@ -38,7 +38,7 @@ class RecentFilesStore(context: Context) {
             activeSubtitleTrackId = prefs.getInt(keySubId(hash), -1),
             audioTrackId = prefs.getInt(keyAudId(hash), RecentFile.AUDIO_NOT_SET),
             subtitleSizePercent = prefs.getInt(keySubSz(hash), RecentFile.DEFAULT_SUB_SIZE),
-            subtitlePositionOrdinal = prefs.getInt(keySubPos(hash), RecentFile.DEFAULT_SUB_POS),
+            subtitlePositionPercent = prefs.getInt(keySubPos(hash), RecentFile.DEFAULT_SUB_POS),
         )
     }
 
@@ -50,7 +50,7 @@ class RecentFilesStore(context: Context) {
         activeSubtitleTrackId: Int = -1,
         audioTrackId: Int = RecentFile.AUDIO_NOT_SET,
         subtitleSizePercent: Int = RecentFile.DEFAULT_SUB_SIZE,
-        subtitlePositionOrdinal: Int = RecentFile.DEFAULT_SUB_POS,
+        subtitlePositionPercent: Int = RecentFile.DEFAULT_SUB_POS,
     ) {
         val uriStr = uri.toString()
         val hash = hash(uriStr)
@@ -63,7 +63,7 @@ class RecentFilesStore(context: Context) {
             .putInt(keySubId(hash), activeSubtitleTrackId)
             .putInt(keyAudId(hash), audioTrackId)
             .putInt(keySubSz(hash), subtitleSizePercent)
-            .putInt(keySubPos(hash), subtitlePositionOrdinal)
+            .putInt(keySubPos(hash), subtitlePositionPercent)
             .apply()
         saveSubtitles(hash, tracks)
     }
@@ -74,7 +74,7 @@ class RecentFilesStore(context: Context) {
         activeSubtitleTrackId: Int,
         audioTrackId: Int,
         subtitleSizePercent: Int,
-        subtitlePositionOrdinal: Int,
+        subtitlePositionPercent: Int,
     ) {
         val hash = hash(uri.toString())
         if (!prefs.contains(keyName(hash))) return
@@ -83,7 +83,7 @@ class RecentFilesStore(context: Context) {
             .putInt(keySubId(hash), activeSubtitleTrackId)
             .putInt(keyAudId(hash), audioTrackId)
             .putInt(keySubSz(hash), subtitleSizePercent)
-            .putInt(keySubPos(hash), subtitlePositionOrdinal)
+            .putInt(keySubPos(hash), subtitlePositionPercent)
             .apply()
     }
 

@@ -77,6 +77,8 @@ class MainActivity : ComponentActivity() {
     private var pendingSubtitleTrackId: Int = -1
     private var pendingAudioTrackId: Int = RecentFile.AUDIO_NOT_SET
     private var coverHomeScreenUntilPlaying: Boolean = false
+    private lateinit var subtitleVisibilityButton: ImageButton
+    private var subtitlesHidden: Boolean = false
 
     private var currentVideoUri: Uri? = null
     private var externalSubtitleUri: Uri? = null
@@ -84,7 +86,7 @@ class MainActivity : ComponentActivity() {
     private var isSeeking = false
     private var knownLengthMs = 0L
     private var subtitleSizePercent = DEFAULT_SUBTITLE_SIZE_PERCENT
-    private var subtitlePosition = SubtitlePosition.BOTTOM
+    private var subtitlePositionPercent: Int = 0
 
     private var pausedPositionMs = -1L
     private var internalSubtitleTracks: List<SubtitleTrack> = emptyList()
@@ -152,6 +154,7 @@ class MainActivity : ComponentActivity() {
         playbackTime = findViewById(R.id.playback_time)
         playPauseButton = findViewById(R.id.play_pause_button)
         settingsButton = findViewById(R.id.settings_button)
+        subtitleVisibilityButton = findViewById(R.id.subtitle_visibility_button)
         subtitleView = findViewById(R.id.subtitle_view)
         subtitleIndexingIndicator = findViewById(R.id.subtitle_indexing_indicator)
         indexingFileNameView = findViewById(R.id.indexing_file_name)
@@ -209,6 +212,16 @@ class MainActivity : ComponentActivity() {
         }
         playPauseButton.setOnClickListener {
             togglePlayback()
+        }
+        subtitleVisibilityButton.setOnClickListener {
+            subtitlesHidden = !subtitlesHidden
+            subtitleRenderer.isHidden = subtitlesHidden
+            subtitleRenderer.onTimeChanged(mediaPlayer.time)
+            subtitleVisibilityButton.setImageResource(
+                if (subtitlesHidden) R.drawable.ic_subtitle_visibility_off
+                else R.drawable.ic_subtitle_visibility,
+            )
+            showPlayerControls()
         }
         settingsButton.setOnClickListener {
             showPlayerControls()
@@ -297,8 +310,7 @@ class MainActivity : ComponentActivity() {
             val cached = recentFilesStore.loadSubtitles(uri)
             recentFilesStore.getAll().find { it.uri == uri }?.let { recent ->
                 subtitleSizePercent = recent.subtitleSizePercent
-                subtitlePosition = SubtitlePosition.values()
-                    .getOrElse(recent.subtitlePositionOrdinal) { SubtitlePosition.BOTTOM }
+                subtitlePositionPercent = recent.subtitlePositionPercent
                 pendingSubtitleTrackId = recent.activeSubtitleTrackId
                 pendingAudioTrackId = recent.audioTrackId
                 applySubtitleTextSize()
@@ -362,6 +374,8 @@ class MainActivity : ComponentActivity() {
             restorePositionMs = startPositionMs
             currentVideoDescriptor = videoDescriptor
             coverHomeScreenUntilPlaying = false
+            subtitlesHidden = false
+            subtitleVisibilityButton.setImageResource(R.drawable.ic_subtitle_visibility)
 
             internalSubtitleTracks = emptyList()
             externalSubtitleTrack = null
@@ -425,7 +439,7 @@ class MainActivity : ComponentActivity() {
                         positionMs = 0L,
                         tracks = tracks,
                         subtitleSizePercent = subtitleSizePercent,
-                        subtitlePositionOrdinal = subtitlePosition.ordinal,
+                        subtitlePositionPercent = subtitlePositionPercent,
                     )
                     mediaPlayer.play()
                     updatePlaybackState()
@@ -504,11 +518,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applySubtitlePosition() {
-        val params = subtitleView.layoutParams as FrameLayout.LayoutParams
-        params.gravity = subtitlePosition.gravity
-        params.topMargin = if (subtitlePosition == SubtitlePosition.TOP) dp(16) else 0
-        params.bottomMargin = if (subtitlePosition == SubtitlePosition.BOTTOM) dp(80) else 0
-        subtitleView.layoutParams = params
+        controlsContainer.post {
+            val params = subtitleView.layoutParams as FrameLayout.LayoutParams
+            params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            params.topMargin = 0
+            val h = controlsContainer.height
+            params.bottomMargin = if (h > 0) {
+                dp(80) + maxOf(0, h - dp(160)) * subtitlePositionPercent / 100
+            } else {
+                dp(80)
+            }
+            subtitleView.layoutParams = params
+        }
     }
 
     private fun applySubtitleTextSize() {
@@ -601,8 +622,7 @@ class MainActivity : ComponentActivity() {
         val cached = recentFilesStore.loadSubtitles(recent.uri)
         externalSubtitleUri = null
         subtitleSizePercent = recent.subtitleSizePercent
-        subtitlePosition = SubtitlePosition.values()
-            .getOrElse(recent.subtitlePositionOrdinal) { SubtitlePosition.BOTTOM }
+        subtitlePositionPercent = recent.subtitlePositionPercent
         pendingSubtitleTrackId = recent.activeSubtitleTrackId
         pendingAudioTrackId = recent.audioTrackId
         applySubtitleTextSize()
@@ -739,12 +759,14 @@ class MainActivity : ComponentActivity() {
                 activeSubtitleTrackId = activeSubtitleTrack?.id ?: -1,
                 audioTrackId = mediaPlayer.audioTrack,
                 subtitleSizePercent = subtitleSizePercent,
-                subtitlePositionOrdinal = subtitlePosition.ordinal,
+                subtitlePositionPercent = subtitlePositionPercent,
             )
         }
     }
 
-    private fun showSettingsPopup() {
+    private enum class SettingsPage { MAIN, AUDIO, SUBTITLES }
+
+    private fun showSettingsPopup(page: SettingsPage = SettingsPage.MAIN) {
         settingsPopup?.dismiss()
         cancelControlsAutoHide()
 
@@ -753,14 +775,28 @@ class MainActivity : ComponentActivity() {
             setBackgroundResource(R.drawable.bg_player_popup)
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
+        when (page) {
+            SettingsPage.MAIN -> {
+                addNavRow(content, getString(R.string.audio_tracks)) { showSettingsPopup(SettingsPage.AUDIO) }
+                addNavRow(content, getString(R.string.subtitle_tracks)) { showSettingsPopup(SettingsPage.SUBTITLES) }
+            }
+            SettingsPage.AUDIO -> {
+                addBackRow(content, getString(R.string.audio_tracks)) { showSettingsPopup(SettingsPage.MAIN) }
+                addDivider(content)
+                addAudioSection(content)
+            }
+            SettingsPage.SUBTITLES -> {
+                addBackRow(content, getString(R.string.subtitle_tracks)) { showSettingsPopup(SettingsPage.MAIN) }
+                addDivider(content)
+                addSubtitleSection(content)
+            }
+        }
 
-        addAudioSection(content)
-        addDivider(content)
-        addSubtitleSection(content)
-
-        val popupWidth = dp(320)
-            .coerceAtMost(resources.displayMetrics.widthPixels - dp(32))
-            .coerceAtLeast(dp(240))
+        val popupWidth = if (page == SettingsPage.MAIN) {
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        } else {
+            dp(300).coerceAtMost(resources.displayMetrics.widthPixels - dp(32)).coerceAtLeast(dp(200))
+        }
 
         settingsPopup = PopupWindow(
             content,
@@ -786,7 +822,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addAudioSection(parent: LinearLayout) {
-        addSectionTitle(parent, getString(R.string.audio_tracks))
         val audioTracks = mediaPlayer.audioTracks.toTrackMenuItems()
         if (audioTracks.isEmpty()) {
             addDisabledRow(parent, getString(R.string.tracks_empty))
@@ -802,14 +837,13 @@ class MainActivity : ComponentActivity() {
                     mediaPlayer.time = currentTime
                     updatePlaybackProgress()
                     saveCurrentSettings()
-                    showSettingsPopup()
+                    showSettingsPopup(SettingsPage.AUDIO)
                 }
             }
         }
     }
 
     private fun addSubtitleSection(parent: LinearLayout) {
-        addSectionTitle(parent, getString(R.string.subtitle_tracks))
         addMenuRow(
             parent = parent,
             text = getString(R.string.load_subtitles),
@@ -820,19 +854,47 @@ class MainActivity : ComponentActivity() {
         }
         addSubtitleTrackRows(parent)
         addSubtitleSizeRow(parent)
-        addSectionTitle(parent, getString(R.string.subtitle_position))
-        SubtitlePosition.entries.forEach { position ->
-            addMenuRow(
-                parent = parent,
-                text = getString(position.labelRes),
-                isSelected = position == subtitlePosition,
-            ) {
-                subtitlePosition = position
-                applySubtitlePosition()
-                saveCurrentSettings()
-                showSettingsPopup()
-            }
+        addSubtitlePositionRow(parent)
+    }
+
+    private fun addSubtitlePositionRow(parent: LinearLayout) {
+        val row = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
         }
+        row.addView(
+            TextView(this).apply {
+                text = getString(R.string.subtitle_position)
+                setTextColor(Color.WHITE)
+                textSize = 14f
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        row.addView(createPopupButton("−") {
+            updateSubtitlePosition(-SUBTITLE_POS_STEP_PERCENT)
+        })
+        row.addView(
+            TextView(this).apply {
+                text = "$subtitlePositionPercent%"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                gravity = Gravity.CENTER
+            },
+            LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        row.addView(createPopupButton("+") {
+            updateSubtitlePosition(SUBTITLE_POS_STEP_PERCENT)
+        })
+        parent.addView(row, popupRowParams())
+    }
+
+    private fun updateSubtitlePosition(deltaPercent: Int) {
+        subtitlePositionPercent = (subtitlePositionPercent + deltaPercent)
+            .coerceIn(0, MAX_SUBTITLE_POS_PERCENT)
+        applySubtitlePosition()
+        saveCurrentSettings()
+        showSettingsPopup(SettingsPage.SUBTITLES)
     }
 
     private fun addSubtitleTrackRows(parent: LinearLayout) {
@@ -849,7 +911,7 @@ class MainActivity : ComponentActivity() {
             activeSubtitleTrack = null
             subtitleRenderer.activeTrack = null
             saveCurrentSettings()
-            showSettingsPopup()
+            showSettingsPopup(SettingsPage.SUBTITLES)
         }
         tracks.forEach { track ->
             addMenuRow(
@@ -860,9 +922,62 @@ class MainActivity : ComponentActivity() {
                 activeSubtitleTrack = track
                 subtitleRenderer.activeTrack = track
                 saveCurrentSettings()
-                showSettingsPopup()
+                showSettingsPopup(SettingsPage.SUBTITLES)
             }
         }
+    }
+
+    private fun addNavRow(parent: LinearLayout, text: String, onClick: () -> Unit) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+        row.addView(
+            TextView(this).apply {
+                this.text = text
+                setTextColor(Color.WHITE)
+                textSize = 14f
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        row.addView(
+            TextView(this).apply {
+                this.text = "›"
+                setTextColor(Color.LTGRAY)
+                textSize = 20f
+            },
+        )
+        parent.addView(row, popupRowParams())
+    }
+
+    private fun addBackRow(parent: LinearLayout, title: String, onClick: () -> Unit) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+        row.addView(
+            TextView(this).apply {
+                text = "‹"
+                setTextColor(Color.LTGRAY)
+                textSize = 20f
+                setPadding(0, 0, dp(10), 0)
+            },
+        )
+        row.addView(
+            TextView(this).apply {
+                this.text = title
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            },
+        )
+        parent.addView(row, popupRowParams())
     }
 
     private fun addSectionTitle(parent: LinearLayout, text: String) {
@@ -979,7 +1094,7 @@ class MainActivity : ComponentActivity() {
             .coerceIn(MIN_SUBTITLE_SIZE_PERCENT, MAX_SUBTITLE_SIZE_PERCENT)
         applySubtitleTextSize()
         saveCurrentSettings()
-        showSettingsPopup()
+        showSettingsPopup(SettingsPage.SUBTITLES)
     }
 
     private fun Uri.displayName(): String {
@@ -1134,12 +1249,6 @@ class MainActivity : ComponentActivity() {
             getParcelable(key)
         }
 
-    private enum class SubtitlePosition(val labelRes: Int, val gravity: Int) {
-        TOP(R.string.subtitle_position_top, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
-        CENTER(R.string.subtitle_position_center, Gravity.CENTER),
-        BOTTOM(R.string.subtitle_position_bottom, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL),
-    }
-
     private data class TrackMenuItem(val id: Int, val name: String)
 
     private companion object {
@@ -1153,6 +1262,8 @@ class MainActivity : ComponentActivity() {
         const val MIN_SUBTITLE_SIZE_PERCENT = 75
         const val MAX_SUBTITLE_SIZE_PERCENT = 150
         const val SUBTITLE_SIZE_STEP_PERCENT = 10
+        const val SUBTITLE_POS_STEP_PERCENT = 5
+        const val MAX_SUBTITLE_POS_PERCENT = 95
         const val BASE_SUBTITLE_SP = 18f
         const val EXTERNAL_TRACK_ID = Int.MAX_VALUE
         const val PHRASE_REPLAY_THRESHOLD_MS = 1_500L

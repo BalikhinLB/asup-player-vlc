@@ -13,6 +13,7 @@ import android.os.Parcelable
 import android.provider.OpenableColumns
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private var subtitleSizePercent = DEFAULT_SUBTITLE_SIZE_PERCENT
     private var subtitlePosition = SubtitlePosition.BOTTOM
 
+    private var pausedPositionMs = -1L
     private var internalSubtitleTracks: List<SubtitleTrack> = emptyList()
     private var externalSubtitleTrack: SubtitleTrack? = null
     private var activeSubtitleTrack: SubtitleTrack? = null
@@ -128,7 +130,22 @@ class MainActivity : ComponentActivity() {
 
         applySubtitlePosition()
         applySubtitleTextSize()
-        attachPlayerViews()
+
+        videoSurfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                if (currentVideoUri != null) attachPlayerViews()
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                // Size is handled in attachPlayerViews() and onConfigurationChanged().
+            }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                // Pause before detaching: VLC keeps rendering for ~20ms after detach,
+                // causing BufferQueue abandoned errors and H.264 reference frame corruption.
+                pausedPositionMs = mediaPlayer.time.coerceAtLeast(0L)
+                mediaPlayer.pause()
+                mediaPlayer.vlcVout.detachViews()
+            }
+        })
 
         openVideoButton.setOnClickListener {
             openDocument.launch(arrayOf("video/*"))
@@ -234,20 +251,12 @@ class MainActivity : ComponentActivity() {
         outState.putLong(KEY_POSITION_MS, mediaPlayer.time.coerceAtLeast(0L))
     }
 
-    override fun onStart() {
-        super.onStart()
-        if (currentVideoUri != null) {
-            attachPlayerViews()
-        }
-    }
-
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
             mediaPlayer.pause()
             setKeepScreenOn(false)
         }
-        mediaPlayer.vlcVout.detachViews()
     }
 
     override fun onDestroy() {
@@ -429,8 +438,10 @@ class MainActivity : ComponentActivity() {
             setKeepScreenOn(false)
             hidePlayerControls()
         } else {
-            attachPlayerViews()
+            val seekTo = pausedPositionMs
+            pausedPositionMs = -1L
             mediaPlayer.play()
+            if (seekTo > 0L) mediaPlayer.time = seekTo
             setKeepScreenOn(true)
             startProgressUpdates()
             showPlayerControls()

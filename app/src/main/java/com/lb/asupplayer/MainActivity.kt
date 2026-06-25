@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsButton: ImageButton
     private lateinit var subtitleView: TextView
     private lateinit var subtitleIndexingIndicator: View
+    private lateinit var indexingFileNameView: TextView
     private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
     private var settingsPopup: PopupWindow? = null
@@ -126,6 +127,7 @@ class MainActivity : ComponentActivity() {
         settingsButton = findViewById(R.id.settings_button)
         subtitleView = findViewById(R.id.subtitle_view)
         subtitleIndexingIndicator = findViewById(R.id.subtitle_indexing_indicator)
+        indexingFileNameView = findViewById(R.id.indexing_file_name)
         subtitleRenderer = SubtitleRenderer(subtitleView)
 
         applySubtitlePosition()
@@ -295,40 +297,37 @@ class MainActivity : ComponentActivity() {
             media.release()
             attachPlayerViews()
             applySubtitlePosition()
-            mediaPlayer.play()
-            updatePlaybackState()
-            showPlayerControls()
-            startProgressUpdates()
 
             val jobId = ++currentVideoJobId
-            startMkvSubtitleExtraction(uri, jobId)
+            indexingFileNameView.text = uri.displayName()
+            subtitleIndexingIndicator.visibility = View.VISIBLE
+            startMkvSubtitleExtraction(uri, jobId, startPositionMs)
             externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
-
-            if (startPositionMs > 0L) {
-                videoSurfaceView.post {
-                    mediaPlayer.time = startPositionMs
-                }
-            }
         } catch (e: Exception) {
             if (e !is IOException && e !is SecurityException) throw e
             onVideoOpenFailed()
         }
     }
 
-    private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int) {
-        subtitleIndexingIndicator.visibility = View.VISIBLE
+    private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int, startPositionMs: Long) {
         subtitleExecutor.execute {
-            val fd = try {
-                contentResolver.openFileDescriptor(uri, "r")
+            val tracks = try {
+                MkvSubtitleExtractor().extract(applicationContext, uri)
             } catch (_: Exception) {
-                null
+                emptyList()
             }
-            val tracks = fd?.use { MkvSubtitleExtractor().extract(it.fileDescriptor) } ?: emptyList()
             runOnUiThread {
+                subtitleIndexingIndicator.visibility = View.GONE
                 if (currentVideoJobId == jobId) {
                     internalSubtitleTracks = tracks
+                    mediaPlayer.play()
+                    updatePlaybackState()
+                    showPlayerControls()
+                    startProgressUpdates()
+                    if (startPositionMs > 0L) {
+                        videoSurfaceView.post { mediaPlayer.time = startPositionMs }
+                    }
                 }
-                subtitleIndexingIndicator.visibility = View.GONE
             }
         }
     }

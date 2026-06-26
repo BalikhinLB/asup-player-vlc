@@ -20,4 +20,13 @@
     <string name="recent_files">Недавние</string>
     <string name="open_file">Открыть файл</string>
     <string name="subtitle_visibility">Видимость субтитров</string>
+    <string name="subtitle_tap_action">Нажатие на субтитры</string>
+    <string name="subtitle_tap_single">Одиночный тап — слово</string>
+    <string name="subtitle_tap_double">Двойной тап — фраза</string>
+    <string name="subtitle_tap_long">Долгий тап — фраза</string>
+    <string name="subtitle_tap_show_menu">Показать меню</string>
+    <string name="subtitle_tap_copy">Копировать</string>
+    <string name="subtitle_tap_none">Нет</string>
+    <string name="copied">Скопировано</string>
+    <string name="no_apps_available">Нет доступных приложений</string>
 </resources>

@@ -1,5 +1,8 @@
 package com.lb.asupplayer
 
+import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.content.res.Configuration
@@ -25,13 +28,11 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.PopupWindow
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -64,8 +65,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var indexingFileNameView: TextView
     private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
-    private var settingsPopup: PopupWindow? = null
-    private var openFilePopup: PopupWindow? = null
+    private lateinit var menuOverlay: FrameLayout
+    private var subtitleSingleTapAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
+    private var subtitleDoubleTapAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
+    private var subtitleLongPressAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
     private val controlsHandler = Handler(Looper.getMainLooper())
     private val hideControlsRunnable = Runnable { hidePlayerControls() }
 
@@ -159,6 +162,8 @@ class MainActivity : ComponentActivity() {
         subtitleIndexingIndicator = findViewById(R.id.subtitle_indexing_indicator)
         indexingFileNameView = findViewById(R.id.indexing_file_name)
         bottomControls = findViewById(R.id.bottom_controls)
+        menuOverlay = findViewById(R.id.menu_overlay)
+        menuOverlay.setOnClickListener { dismissMenuOverlay() }
         subtitleRenderer = SubtitleRenderer(subtitleView)
 
         populateHomeScreen()
@@ -168,6 +173,11 @@ class MainActivity : ComponentActivity() {
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
+                    // When paused and tap is on visible subtitle — let the subtitle handler deal with it
+                    if (!mediaPlayer.isPlaying &&
+                        subtitleView.visibility == View.VISIBLE &&
+                        subtitleView.containsRaw(e)
+                    ) return true
                     val onButton = playPauseButton.containsRaw(e) || bottomControls.containsRaw(e) || openInPlayerButton.containsRaw(e)
                     if (playerControls.visibility == View.VISIBLE && !onButton) {
                         hidePlayerControls()
@@ -178,6 +188,10 @@ class MainActivity : ComponentActivity() {
                 }
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
+                    if (!mediaPlayer.isPlaying &&
+                        subtitleView.visibility == View.VISIBLE &&
+                        subtitleView.containsRaw(e)
+                    ) return true  // subtitle gesture detector handles it
                     if (e.x < controlsContainer.width / 2f) seekToPrevPhrase()
                     else seekToNextPhrase()
                     return true
@@ -318,6 +332,9 @@ class MainActivity : ComponentActivity() {
             }
             playVideo(uri, restorePositionMs, cached)
         }
+
+        loadSubtitleTapAction()
+        setupSubtitleTapHandler()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -343,15 +360,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applySystemBarsMode(resources.configuration)
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        doubleTapDetector.onTouchEvent(ev)
+        if (menuOverlay.visibility != View.VISIBLE) doubleTapDetector.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        settingsPopup?.dismiss()
-        openFilePopup?.dismiss()
+        dismissMenuOverlay()
         controlsHandler.removeCallbacks(progressUpdater)
         controlsHandler.removeCallbacks(hideControlsRunnable)
         mediaPlayer.vlcVout.detachViews()
@@ -617,7 +638,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playRecentFile(recent: RecentFile) {
-        openFilePopup?.dismiss()
+        dismissMenuOverlay()
         recentFilesStore.moveToFront(recent.uri)
         val cached = recentFilesStore.loadSubtitles(recent.uri)
         externalSubtitleUri = null
@@ -675,9 +696,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showOpenFilePopup() {
-        openFilePopup?.dismiss()
-        cancelControlsAutoHide()
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundResource(R.drawable.bg_player_popup)
@@ -685,7 +703,7 @@ class MainActivity : ComponentActivity() {
         }
 
         addMenuRow(content, getString(R.string.open_file), false) {
-            openFilePopup?.dismiss()
+            dismissMenuOverlay()
             openDocument.launch(arrayOf("video/*"))
         }
 
@@ -696,30 +714,16 @@ class MainActivity : ComponentActivity() {
             recents.forEach { addRecentPopupRow(content, it) }
         }
 
-        val popupWidth = dp(320)
+        val width = dp(320)
             .coerceAtMost(resources.displayMetrics.widthPixels - dp(32))
             .coerceAtLeast(dp(240))
 
-        openFilePopup = PopupWindow(
+        showMenuOverlay(
             content,
-            popupWidth,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            true,
-        ).apply {
-            setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
-            isOutsideTouchable = true
-            elevation = dp(8).toFloat()
-            setOnDismissListener {
-                openFilePopup = null
-                scheduleControlsAutoHide()
-            }
-        }
-
-        openFilePopup?.showAtLocation(
-            controlsContainer,
-            Gravity.TOP or Gravity.END,
-            dp(8),
-            dp(64),
+            gravity = Gravity.TOP or Gravity.END,
+            width = width,
+            marginEnd = dp(8),
+            marginTop = dp(64),
         )
     }
 
@@ -764,15 +768,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private enum class SettingsPage { MAIN, AUDIO, SUBTITLES }
+    private enum class SettingsPage {
+        MAIN, AUDIO, SUBTITLES, SUBTITLE_ACTIONS,
+        SUBTITLE_SINGLE_TAP, SUBTITLE_DOUBLE_TAP, SUBTITLE_LONG_PRESS,
+    }
 
     private fun showSettingsPopup(page: SettingsPage = SettingsPage.MAIN) {
-        settingsPopup?.dismiss()
-        cancelControlsAutoHide()
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_player_popup)
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
         when (page) {
@@ -790,34 +794,61 @@ class MainActivity : ComponentActivity() {
                 addDivider(content)
                 addSubtitleSection(content)
             }
+            SettingsPage.SUBTITLE_ACTIONS -> {
+                addBackRow(content, getString(R.string.subtitle_tap_action)) { showSettingsPopup(SettingsPage.SUBTITLES) }
+                addDivider(content)
+                addNavRow(content, getString(R.string.subtitle_tap_single)) { showSettingsPopup(SettingsPage.SUBTITLE_SINGLE_TAP) }
+                addNavRow(content, getString(R.string.subtitle_tap_double)) { showSettingsPopup(SettingsPage.SUBTITLE_DOUBLE_TAP) }
+                addNavRow(content, getString(R.string.subtitle_tap_long))   { showSettingsPopup(SettingsPage.SUBTITLE_LONG_PRESS) }
+            }
+            SettingsPage.SUBTITLE_SINGLE_TAP -> {
+                addBackRow(content, getString(R.string.subtitle_tap_single)) { showSettingsPopup(SettingsPage.SUBTITLE_ACTIONS) }
+                addDivider(content)
+                addSubtitleActionPickerRows(content, subtitleSingleTapAction, PREF_SINGLE_TAP_ACTION, SettingsPage.SUBTITLE_SINGLE_TAP)
+            }
+            SettingsPage.SUBTITLE_DOUBLE_TAP -> {
+                addBackRow(content, getString(R.string.subtitle_tap_double)) { showSettingsPopup(SettingsPage.SUBTITLE_ACTIONS) }
+                addDivider(content)
+                addSubtitleActionPickerRows(content, subtitleDoubleTapAction, PREF_DOUBLE_TAP_ACTION, SettingsPage.SUBTITLE_DOUBLE_TAP)
+            }
+            SettingsPage.SUBTITLE_LONG_PRESS -> {
+                addBackRow(content, getString(R.string.subtitle_tap_long)) { showSettingsPopup(SettingsPage.SUBTITLE_ACTIONS) }
+                addDivider(content)
+                addSubtitleActionPickerRows(content, subtitleLongPressAction, PREF_LONG_PRESS_ACTION, SettingsPage.SUBTITLE_LONG_PRESS)
+            }
         }
 
-        val popupWidth = if (page == SettingsPage.MAIN) {
+        val menuWidth = if (page == SettingsPage.MAIN) {
             ViewGroup.LayoutParams.WRAP_CONTENT
         } else {
             dp(300).coerceAtMost(resources.displayMetrics.widthPixels - dp(32)).coerceAtLeast(dp(200))
         }
 
-        settingsPopup = PopupWindow(
-            content,
-            popupWidth,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            true,
-        ).apply {
-            setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
-            isOutsideTouchable = true
-            elevation = dp(8).toFloat()
-            setOnDismissListener {
-                settingsPopup = null
-                scheduleControlsAutoHide()
+        val popupView = if (page == SettingsPage.MAIN) {
+            content.apply { setBackgroundResource(R.drawable.bg_player_popup) }
+        } else {
+            val maxH = (resources.displayMetrics.heightPixels * 0.7f).toInt()
+            android.widget.ScrollView(this).apply {
+                setBackgroundResource(R.drawable.bg_player_popup)
+                isVerticalScrollBarEnabled = false
+                addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }.also { sv ->
+                sv.post {
+                    if (sv.height > maxH) {
+                        val lp = sv.layoutParams
+                        lp?.height = maxH
+                        sv.layoutParams = lp
+                    }
+                }
             }
         }
 
-        settingsPopup?.showAtLocation(
-            controlsContainer,
-            Gravity.BOTTOM or Gravity.END,
-            dp(16),
-            controlsContainer.paddingBottom + dp(88),
+        showMenuOverlay(
+            popupView,
+            gravity = Gravity.BOTTOM or Gravity.END,
+            width = menuWidth,
+            marginEnd = dp(16),
+            marginBottom = controlsContainer.paddingBottom + dp(88),
         )
     }
 
@@ -849,12 +880,14 @@ class MainActivity : ComponentActivity() {
             text = getString(R.string.load_subtitles),
             isSelected = externalSubtitleUri != null,
         ) {
-            settingsPopup?.dismiss()
+            dismissMenuOverlay()
             openSubtitleDocument.launch(SUBTITLE_MIME_TYPES)
         }
         addSubtitleTrackRows(parent)
         addSubtitleSizeRow(parent)
         addSubtitlePositionRow(parent)
+        addDivider(parent)
+        addNavRow(parent, getString(R.string.subtitle_tap_action)) { showSettingsPopup(SettingsPage.SUBTITLE_ACTIONS) }
     }
 
     private fun addSubtitlePositionRow(parent: LinearLayout) {
@@ -978,6 +1011,198 @@ class MainActivity : ComponentActivity() {
             },
         )
         parent.addView(row, popupRowParams())
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupSubtitleTapHandler() {
+        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val phrase = subtitleView.text?.toString()?.takeIf { it.isNotEmpty() } ?: return true
+                handleSubtitleTap(wordAtTap(e) ?: phrase, subtitleSingleTapAction)
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val phrase = subtitleView.text?.toString()?.takeIf { it.isNotEmpty() } ?: return true
+                handleSubtitleTap(phrase, subtitleDoubleTapAction)
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                val phrase = subtitleView.text?.toString()?.takeIf { it.isNotEmpty() } ?: return
+                handleSubtitleTap(phrase, subtitleLongPressAction)
+            }
+        })
+
+        subtitleView.setOnTouchListener { _, event ->
+            if (mediaPlayer.isPlaying) return@setOnTouchListener false
+            if (subtitleView.visibility != View.VISIBLE) return@setOnTouchListener false
+            gestureDetector.onTouchEvent(event)
+            true
+        }
+    }
+
+    private fun loadSubtitleTapAction() {
+        val prefs = getSharedPreferences(SUBTITLE_ACTION_PREFS, MODE_PRIVATE)
+        subtitleSingleTapAction = prefs.getString(PREF_SINGLE_TAP_ACTION, null)
+            .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+        subtitleDoubleTapAction = prefs.getString(PREF_DOUBLE_TAP_ACTION, null)
+            .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+        subtitleLongPressAction = prefs.getString(PREF_LONG_PRESS_ACTION, null)
+            .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+    }
+
+    private fun saveSubtitleTapAction(prefKey: String, action: SubtitleTapAction) {
+        when (prefKey) {
+            PREF_SINGLE_TAP_ACTION -> subtitleSingleTapAction = action
+            PREF_DOUBLE_TAP_ACTION -> subtitleDoubleTapAction = action
+            PREF_LONG_PRESS_ACTION -> subtitleLongPressAction = action
+        }
+        getSharedPreferences(SUBTITLE_ACTION_PREFS, MODE_PRIVATE)
+            .edit().putString(prefKey, action.toPreferenceValue()).apply()
+    }
+
+    private fun handleSubtitleTap(text: String, action: SubtitleTapAction) {
+        when (action) {
+            SubtitleTapAction.None -> Unit
+            SubtitleTapAction.Copy -> copySubtitleText(text)
+            SubtitleTapAction.ShowMenu -> showSubtitleActionMenu(text)
+            is SubtitleTapAction.ProcessText -> {
+                val ok = availableProcessTextTargets()
+                    .any { it.packageName == action.packageName && it.activityName == action.activityName }
+                if (ok) startProcessText(action.packageName, action.activityName, text)
+                else showSubtitleActionMenu(text)
+            }
+        }
+    }
+
+    private fun showSubtitleActionMenu(phraseText: String) {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_player_popup)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+
+        val targets = availableProcessTextTargets()
+        if (targets.isEmpty()) {
+            addDisabledRow(content, getString(R.string.no_apps_available))
+        } else {
+            targets.forEach { target ->
+                addMenuRow(content, target.label, false) {
+                    dismissMenuOverlay()
+                    startProcessText(target.packageName, target.activityName, phraseText)
+                }
+            }
+        }
+        addDivider(content)
+        addMenuRow(content, getString(R.string.subtitle_tap_copy), false) {
+            dismissMenuOverlay()
+            copySubtitleText(phraseText)
+        }
+
+        showMenuOverlay(
+            content,
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+            marginBottom = controlsContainer.paddingBottom + dp(80),
+        )
+    }
+
+    private fun copySubtitleText(text: String) {
+        getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("subtitle", text))
+        Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun startProcessText(packageName: String, activityName: String, text: String) {
+        try {
+            startActivity(
+                Intent(Intent.ACTION_PROCESS_TEXT)
+                    .setType("text/plain")
+                    .setClassName(packageName, activityName)
+                    .putExtra(Intent.EXTRA_PROCESS_TEXT, text)
+                    .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true),
+            )
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.no_apps_available, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun availableProcessTextTargets(): List<ProcessTextTarget> {
+        val intent = Intent(Intent.ACTION_PROCESS_TEXT).setType("text/plain")
+        return packageManager.queryIntentActivities(intent, 0)
+            .mapNotNull { info ->
+                val label = info.loadLabel(packageManager).toString().takeIf { it.isNotEmpty() }
+                    ?: return@mapNotNull null
+                ProcessTextTarget(info.activityInfo.packageName, info.activityInfo.name, label)
+            }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    private fun wordAtTap(event: MotionEvent): String? {
+        val layout = subtitleView.layout ?: return null
+        val x = event.x.toInt() - subtitleView.totalPaddingLeft + subtitleView.scrollX
+        val y = event.y.toInt() - subtitleView.totalPaddingTop + subtitleView.scrollY
+        if (y < 0 || y > layout.height) return null
+        val text = subtitleView.text?.toString() ?: return null
+        if (text.isEmpty()) return null
+        val line = layout.getLineForVertical(y)
+        val rawOffset = layout.getOffsetForHorizontal(line, x.toFloat())
+        val charIndex = when {
+            rawOffset < text.length && text[rawOffset].isWordChar() -> rawOffset
+            rawOffset > 0 && text[rawOffset - 1].isWordChar() -> rawOffset - 1
+            else -> return null
+        }
+        var start = charIndex
+        while (start > 0 && text[start - 1].isWordChar()) start--
+        var end = charIndex + 1
+        while (end < text.length && text[end].isWordChar()) end++
+        return text.substring(start, end)
+    }
+
+    private fun Char.isWordChar() = isLetterOrDigit() || this == '\'' || this == '\'' || this == '-'
+
+    private fun String?.toSubtitleTapAction(): SubtitleTapAction? = when (this) {
+        null -> null
+        ACTION_VALUE_NONE -> SubtitleTapAction.None
+        ACTION_VALUE_COPY -> SubtitleTapAction.Copy
+        ACTION_VALUE_MENU -> SubtitleTapAction.ShowMenu
+        else -> if (startsWith(ACTION_VALUE_PROCESS_PREFIX)) {
+            val parts = removePrefix(ACTION_VALUE_PROCESS_PREFIX).split("/", limit = 2)
+            if (parts.size == 2) SubtitleTapAction.ProcessText(parts[0], parts[1]) else null
+        } else null
+    }
+
+    private fun addSubtitleActionPickerRows(
+        parent: LinearLayout,
+        current: SubtitleTapAction,
+        prefKey: String,
+        returnPage: SettingsPage,
+    ) {
+        val targets = availableProcessTextTargets()
+        targets.forEach { target ->
+            val sel = current is SubtitleTapAction.ProcessText &&
+                current.packageName == target.packageName &&
+                current.activityName == target.activityName
+            addMenuRow(parent, target.label, sel) {
+                saveSubtitleTapAction(prefKey, SubtitleTapAction.ProcessText(target.packageName, target.activityName))
+                showSettingsPopup(returnPage)
+            }
+        }
+        if (targets.isNotEmpty()) addDivider(parent)
+        addMenuRow(parent, getString(R.string.subtitle_tap_show_menu), current == SubtitleTapAction.ShowMenu) {
+            saveSubtitleTapAction(prefKey, SubtitleTapAction.ShowMenu)
+            showSettingsPopup(returnPage)
+        }
+        addMenuRow(parent, getString(R.string.subtitle_tap_copy), current == SubtitleTapAction.Copy) {
+            saveSubtitleTapAction(prefKey, SubtitleTapAction.Copy)
+            showSettingsPopup(returnPage)
+        }
+        addMenuRow(parent, getString(R.string.subtitle_tap_none), current == SubtitleTapAction.None) {
+            saveSubtitleTapAction(prefKey, SubtitleTapAction.None)
+            showSettingsPopup(returnPage)
+        }
     }
 
     private fun addSectionTitle(parent: LinearLayout, text: String) {
@@ -1196,6 +1421,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showMenuOverlay(
+        contentView: View,
+        gravity: Int,
+        width: Int = ViewGroup.LayoutParams.WRAP_CONTENT,
+        marginStart: Int = 0,
+        marginEnd: Int = 0,
+        marginTop: Int = 0,
+        marginBottom: Int = 0,
+    ) {
+        val isNew = menuOverlay.visibility != View.VISIBLE
+        menuOverlay.removeAllViews()
+        contentView.isClickable = true
+        contentView.elevation = dp(8).toFloat()
+        menuOverlay.addView(
+            contentView,
+            FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                this.gravity = gravity
+                this.marginStart = marginStart
+                this.marginEnd = marginEnd
+                topMargin = marginTop
+                bottomMargin = marginBottom
+            },
+        )
+        if (isNew) {
+            cancelControlsAutoHide()
+            menuOverlay.visibility = View.VISIBLE
+        }
+    }
+
+    private fun dismissMenuOverlay() {
+        if (menuOverlay.visibility == View.GONE) return
+        menuOverlay.visibility = View.GONE
+        menuOverlay.removeAllViews()
+        scheduleControlsAutoHide()
+    }
+
     private fun applySystemBarsMode(configuration: Configuration) {
         val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -1249,6 +1510,22 @@ class MainActivity : ComponentActivity() {
             getParcelable(key)
         }
 
+    private sealed class SubtitleTapAction {
+        object None : SubtitleTapAction()
+        object Copy : SubtitleTapAction()
+        object ShowMenu : SubtitleTapAction()
+        data class ProcessText(val packageName: String, val activityName: String) : SubtitleTapAction()
+
+        fun toPreferenceValue(): String = when (this) {
+            is None -> ACTION_VALUE_NONE
+            is Copy -> ACTION_VALUE_COPY
+            is ShowMenu -> ACTION_VALUE_MENU
+            is ProcessText -> "$ACTION_VALUE_PROCESS_PREFIX$packageName/$activityName"
+        }
+    }
+
+    private data class ProcessTextTarget(val packageName: String, val activityName: String, val label: String)
+
     private data class TrackMenuItem(val id: Int, val name: String)
 
     private companion object {
@@ -1266,6 +1543,14 @@ class MainActivity : ComponentActivity() {
         const val MAX_SUBTITLE_POS_PERCENT = 95
         const val BASE_SUBTITLE_SP = 18f
         const val EXTERNAL_TRACK_ID = Int.MAX_VALUE
+        const val SUBTITLE_ACTION_PREFS = "subtitle_action_prefs"
+        const val PREF_SINGLE_TAP_ACTION = "single_tap_action"
+        const val PREF_DOUBLE_TAP_ACTION = "double_tap_action"
+        const val PREF_LONG_PRESS_ACTION = "long_press_action"
+        const val ACTION_VALUE_NONE = "none"
+        const val ACTION_VALUE_COPY = "copy"
+        const val ACTION_VALUE_MENU = "menu"
+        const val ACTION_VALUE_PROCESS_PREFIX = "process:"
         const val PHRASE_REPLAY_THRESHOLD_MS = 1_500L
         const val PHRASE_SEEK_FALLBACK_MS = 10_000L
         const val PHRASE_SEEK_SUPPRESS_MS = 600L

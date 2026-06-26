@@ -1,12 +1,17 @@
 package com.lb.asupplayer
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.os.LocaleList
 import android.provider.Settings
+import android.view.KeyEvent
 import android.widget.ImageView
+import android.widget.ScrollView
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import android.content.res.AssetFileDescriptor
@@ -38,6 +43,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.edit
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -71,6 +77,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var subtitleRenderer: SubtitleRenderer
     private var currentVideoDescriptor: AssetFileDescriptor? = null
     private lateinit var menuOverlay: FrameLayout
+    private var currentSettingsPage: SettingsPage? = null
+    private var helpScreenView: View? = null
     private var subtitleSingleTapAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
     private var subtitleDoubleTapAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
     private var subtitleLongPressAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
@@ -105,7 +113,7 @@ class MainActivity : ComponentActivity() {
     private var isSeeking = false
     private var knownLengthMs = 0L
     private var subtitleSizePercent = DEFAULT_SUBTITLE_SIZE_PERCENT
-    private var subtitlePositionPercent: Int = 0
+    private var subtitlePositionPercent: Int = 15
 
     private var pausedPositionMs = -1L
     private var internalSubtitleTracks: List<SubtitleTrack> = emptyList()
@@ -149,6 +157,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    override fun attachBaseContext(newBase: Context) {
+        val languageTag = newBase
+            .getSharedPreferences(LANGUAGE_PREFS, MODE_PRIVATE)
+            .getString(PREF_APP_LANGUAGE_TAG, null)
+        super.attachBaseContext(newBase.withAppLocale(languageTag))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -165,6 +180,7 @@ class MainActivity : ComponentActivity() {
         videoSurfaceView = findViewById(R.id.video_surface)
         controlsContainer = findViewById(R.id.controls_container)
         homeScreen = findViewById(R.id.home_screen)
+        if (currentVideoUri != null) homeScreen.visibility = View.GONE
         recentFilesList = findViewById(R.id.recent_files_list)
         openVideoButton = findViewById(R.id.open_video_button)
         playerControls = findViewById(R.id.player_controls)
@@ -300,7 +316,7 @@ class MainActivity : ComponentActivity() {
 
                     MediaPlayer.Event.Paused -> {
                         setKeepScreenOn(false)
-                        hidePlayerControls()
+                        cancelControlsAutoHide()
                         stopProgressUpdates()
                         updatePlaybackState()
                     }
@@ -564,10 +580,13 @@ class MainActivity : ComponentActivity() {
             params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             params.topMargin = 0
             val h = controlsContainer.height
-            params.bottomMargin = if (h > 0) {
-                dp(80) + maxOf(0, h - dp(160)) * subtitlePositionPercent / 100
+            if (h > 0) {
+                val minBottom = dp(25)
+                val subtitleH = subtitleView.height.takeIf { it > 0 } ?: dp(40)
+                val maxBottom = (h - dp(25) - subtitleH).coerceAtLeast(minBottom)
+                params.bottomMargin = minBottom + (maxBottom - minBottom) * subtitlePositionPercent / 100
             } else {
-                dp(80)
+                params.bottomMargin = dp(25)
             }
             subtitleView.layoutParams = params
         }
@@ -602,7 +621,7 @@ class MainActivity : ComponentActivity() {
         if (mediaPlayer.isPlaying) {
             mediaPlayer.pause()
             setKeepScreenOn(false)
-            hidePlayerControls()
+            cancelControlsAutoHide()
         } else {
             val seekTo = pausedPositionMs
             pausedPositionMs = -1L
@@ -791,9 +810,14 @@ class MainActivity : ComponentActivity() {
     private enum class SettingsPage {
         MAIN, AUDIO, SUBTITLES, SUBTITLE_ACTIONS,
         SUBTITLE_SINGLE_TAP, SUBTITLE_DOUBLE_TAP, SUBTITLE_LONG_PRESS,
+        LANGUAGE,
     }
 
+    private data class LanguageOption(val languageTag: String?, val titleResId: Int)
+    private data class HelpItem(val iconResId: Int, val titleResId: Int, val bodyResId: Int)
+
     private fun showSettingsPopup(page: SettingsPage = SettingsPage.MAIN) {
+        currentSettingsPage = page
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -801,8 +825,12 @@ class MainActivity : ComponentActivity() {
         }
         when (page) {
             SettingsPage.MAIN -> {
-                addNavRow(content, getString(R.string.audio_tracks)) { showSettingsPopup(SettingsPage.AUDIO) }
-                addNavRow(content, getString(R.string.subtitle_tracks)) { showSettingsPopup(SettingsPage.SUBTITLES) }
+                addMainMenuRow(content, getString(R.string.audio_tracks)) { showSettingsPopup(SettingsPage.AUDIO) }
+                addMainMenuRow(content, getString(R.string.subtitle_tracks)) { showSettingsPopup(SettingsPage.SUBTITLES) }
+                addDivider(content)
+                addMainMenuRow(content, getString(R.string.language_settings)) { showSettingsPopup(SettingsPage.LANGUAGE) }
+                addMainMenuRow(content, getString(R.string.feedback_settings)) { openFeedbackEmail() }
+                addMainMenuRow(content, getString(R.string.help_settings)) { showHelpScreen() }
             }
             SettingsPage.AUDIO -> {
                 addBackRow(content, getString(R.string.audio_tracks)) { showSettingsPopup(SettingsPage.MAIN) }
@@ -836,6 +864,16 @@ class MainActivity : ComponentActivity() {
                 addDivider(content)
                 addSubtitleActionPickerRows(content, subtitleLongPressAction, PREF_LONG_PRESS_ACTION, SettingsPage.SUBTITLE_LONG_PRESS)
             }
+            SettingsPage.LANGUAGE -> {
+                addBackRow(content, getString(R.string.language_settings)) { showSettingsPopup(SettingsPage.MAIN) }
+                addDivider(content)
+                val current = currentLanguageTag()
+                languageOptions().forEach { option ->
+                    addMenuRow(content, getString(option.titleResId), isSelected = current == option.languageTag) {
+                        setAppLanguage(option.languageTag)
+                    }
+                }
+            }
         }
 
         val menuWidth = if (page == SettingsPage.MAIN) {
@@ -850,7 +888,7 @@ class MainActivity : ComponentActivity() {
             val maxH = (resources.displayMetrics.heightPixels * 0.7f).toInt()
             android.widget.ScrollView(this).apply {
                 setBackgroundResource(R.drawable.bg_player_popup)
-                isVerticalScrollBarEnabled = false
+                isVerticalScrollBarEnabled = true
                 addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }.also { sv ->
                 sv.post {
@@ -911,35 +949,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addSubtitlePositionRow(parent: LinearLayout) {
-        val row = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-        }
-        row.addView(
-            TextView(this).apply {
-                text = getString(R.string.subtitle_position)
-                setTextColor(Color.WHITE)
-                textSize = 14f
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        addStepperRow(
+            parent,
+            getString(R.string.subtitle_position),
+            "$subtitlePositionPercent%",
+            valueTag = STEPPER_TAG_POS,
+            onDecrement = { updateSubtitlePosition(-SUBTITLE_POS_STEP_PERCENT) },
+            onIncrement = { updateSubtitlePosition(SUBTITLE_POS_STEP_PERCENT) },
         )
-        row.addView(createPopupButton("−") {
-            updateSubtitlePosition(-SUBTITLE_POS_STEP_PERCENT)
-        })
-        row.addView(
-            TextView(this).apply {
-                text = "$subtitlePositionPercent%"
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                gravity = Gravity.CENTER
-            },
-            LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT),
-        )
-        row.addView(createPopupButton("+") {
-            updateSubtitlePosition(SUBTITLE_POS_STEP_PERCENT)
-        })
-        parent.addView(row, popupRowParams())
     }
 
     private fun updateSubtitlePosition(deltaPercent: Int) {
@@ -947,7 +964,7 @@ class MainActivity : ComponentActivity() {
             .coerceIn(0, MAX_SUBTITLE_POS_PERCENT)
         applySubtitlePosition()
         saveCurrentSettings()
-        showSettingsPopup(SettingsPage.SUBTITLES)
+        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_POS)?.text = "$subtitlePositionPercent%"
     }
 
     private fun addSubtitleTrackRows(parent: LinearLayout) {
@@ -990,20 +1007,47 @@ class MainActivity : ComponentActivity() {
         }
         row.addView(
             TextView(this).apply {
+                this.text = "‹"
+                setTextColor(Color.LTGRAY)
+                textSize = 20f
+                setPadding(0, 0, dp(8), 0)
+            },
+        )
+        row.addView(
+            TextView(this).apply {
                 this.text = text
                 setTextColor(Color.WHITE)
                 textSize = 14f
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
+        parent.addView(row, popupRowParams())
+    }
+
+    private fun addMainMenuRow(parent: LinearLayout, text: String, onClick: () -> Unit) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
         row.addView(
             TextView(this).apply {
-                this.text = "›"
+                this.text = "‹"
                 setTextColor(Color.LTGRAY)
                 textSize = 20f
+                setPadding(0, 0, dp(8), 0)
             },
         )
-        parent.addView(row, popupRowParams())
+        row.addView(
+            TextView(this).apply {
+                this.text = text
+                setTextColor(Color.WHITE)
+                textSize = 14f
+            },
+        )
+        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
     private fun addBackRow(parent: LinearLayout, title: String, onClick: () -> Unit) {
@@ -1016,18 +1060,19 @@ class MainActivity : ComponentActivity() {
         }
         row.addView(
             TextView(this).apply {
-                text = "‹"
-                setTextColor(Color.LTGRAY)
-                textSize = 20f
-                setPadding(0, 0, dp(10), 0)
-            },
-        )
-        row.addView(
-            TextView(this).apply {
                 this.text = title
                 setTextColor(Color.WHITE)
                 textSize = 15f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        row.addView(
+            TextView(this).apply {
+                text = "›"
+                setTextColor(Color.LTGRAY)
+                textSize = 20f
+                setPadding(dp(10), 0, 0, 0)
             },
         )
         parent.addView(row, popupRowParams())
@@ -1284,38 +1329,63 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addSubtitleSizeRow(parent: LinearLayout) {
-        val row = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-        }
+        addStepperRow(
+            parent,
+            getString(R.string.subtitle_size),
+            "$subtitleSizePercent%",
+            valueTag = STEPPER_TAG_SIZE,
+            onDecrement = { updateSubtitleSize(-SUBTITLE_SIZE_STEP_PERCENT) },
+            onIncrement = { updateSubtitleSize(SUBTITLE_SIZE_STEP_PERCENT) },
+        )
+    }
 
+    private fun addStepperRow(
+        parent: LinearLayout,
+        label: String,
+        value: String,
+        valueTag: Any? = null,
+        onDecrement: () -> Unit,
+        onIncrement: () -> Unit,
+    ) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+        }
         row.addView(
             TextView(this).apply {
-                text = getString(R.string.subtitle_size)
+                text = label
                 setTextColor(Color.WHITE)
                 textSize = 14f
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
-
-        row.addView(createPopupButton("-") {
-            updateSubtitleSize(SUBTITLE_SIZE_STEP_PERCENT.unaryMinus())
-        })
+        row.addView(createStepperButton("−", onDecrement))
         row.addView(
             TextView(this).apply {
-                text = "$subtitleSizePercent%"
+                text = value
                 setTextColor(Color.WHITE)
                 textSize = 14f
                 gravity = Gravity.CENTER
+                tag = valueTag
             },
-            LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT),
         )
-        row.addView(createPopupButton("+") {
-            updateSubtitleSize(SUBTITLE_SIZE_STEP_PERCENT)
-        })
-
+        row.addView(createStepperButton("+", onIncrement))
         parent.addView(row, popupRowParams())
+    }
+
+    private fun createStepperButton(symbol: String, onClick: () -> Unit): TextView {
+        val size = dp(32)
+        return TextView(this).apply {
+            text = symbol
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setBackgroundResource(R.drawable.bg_settings_button)
+            setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(size, size)
+        }
     }
 
     private fun popupRowParams() = LinearLayout.LayoutParams(
@@ -1323,23 +1393,12 @@ class MainActivity : ComponentActivity() {
         ViewGroup.LayoutParams.WRAP_CONTENT,
     )
 
-    private fun createPopupButton(text: String, onClick: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            minWidth = 0
-            minHeight = 0
-            setPadding(0, 0, 0, 0)
-            setOnClickListener { onClick() }
-        }
-
     private fun updateSubtitleSize(deltaPercent: Int) {
         subtitleSizePercent = (subtitleSizePercent + deltaPercent)
             .coerceIn(MIN_SUBTITLE_SIZE_PERCENT, MAX_SUBTITLE_SIZE_PERCENT)
         applySubtitleTextSize()
         saveCurrentSettings()
-        showSettingsPopup(SettingsPage.SUBTITLES)
+        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_SIZE)?.text = "$subtitleSizePercent%"
     }
 
     private fun Uri.displayName(): String {
@@ -1472,9 +1531,23 @@ class MainActivity : ComponentActivity() {
 
     private fun dismissMenuOverlay() {
         if (menuOverlay.visibility == View.GONE) return
+        currentSettingsPage = null
         menuOverlay.visibility = View.GONE
         menuOverlay.removeAllViews()
         scheduleControlsAutoHide()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when (currentSettingsPage) {
+            null -> if (menuOverlay.visibility == View.VISIBLE) dismissMenuOverlay() else super.onBackPressed()
+            SettingsPage.MAIN -> dismissMenuOverlay()
+            SettingsPage.AUDIO, SettingsPage.SUBTITLES -> showSettingsPopup(SettingsPage.MAIN)
+            SettingsPage.SUBTITLE_ACTIONS -> showSettingsPopup(SettingsPage.SUBTITLES)
+            SettingsPage.SUBTITLE_SINGLE_TAP, SettingsPage.SUBTITLE_DOUBLE_TAP, SettingsPage.SUBTITLE_LONG_PRESS ->
+                showSettingsPopup(SettingsPage.SUBTITLE_ACTIONS)
+            SettingsPage.LANGUAGE -> showSettingsPopup(SettingsPage.MAIN)
+        }
     }
 
     private fun handleSwipeGesture(ev: MotionEvent) {
@@ -1668,6 +1741,167 @@ class MainActivity : ComponentActivity() {
 
     private data class ProcessTextTarget(val packageName: String, val activityName: String, val label: String)
 
+    // ── Language ──────────────────────────────────────────────────────────────
+
+    private fun languageOptions() = listOf(
+        LanguageOption(null, R.string.language_system),
+        LanguageOption(LANGUAGE_TAG_ENGLISH, R.string.language_english),
+        LanguageOption(LANGUAGE_TAG_RUSSIAN, R.string.language_russian),
+    )
+
+    private fun currentLanguageTag(): String? {
+        return getSharedPreferences(LANGUAGE_PREFS, MODE_PRIVATE).getString(PREF_APP_LANGUAGE_TAG, null)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setAppLanguage(languageTag: String?) {
+        getSharedPreferences(LANGUAGE_PREFS, MODE_PRIVATE).edit {
+            if (languageTag == null) remove(PREF_APP_LANGUAGE_TAG) else putString(PREF_APP_LANGUAGE_TAG, languageTag)
+        }
+        val locale = if (languageTag.isNullOrEmpty()) Locale.getDefault()
+                     else Locale.forLanguageTag(languageTag)
+        val config = Configuration(resources.configuration)
+        config.setLocale(locale)
+        resources.updateConfiguration(config, resources.displayMetrics)
+        showSettingsPopup(SettingsPage.LANGUAGE)
+    }
+
+    private fun Context.withAppLocale(languageTag: String?): Context {
+        if (languageTag.isNullOrEmpty()) return this
+        val config = Configuration(resources.configuration)
+        config.setLocales(LocaleList.forLanguageTags(languageTag))
+        return createConfigurationContext(config)
+    }
+
+    // ── Feedback ──────────────────────────────────────────────────────────────
+
+    private fun openFeedbackEmail() {
+        val subject = Uri.encode(getString(R.string.feedback_email_subject))
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("mailto:$FEEDBACK_EMAIL?subject=$subject")
+        }
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.feedback_email_unavailable, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ── Help ──────────────────────────────────────────────────────────────────
+
+    private fun showHelpScreen() {
+        dismissMenuOverlay()
+        dismissHelpScreen()
+        val root = findViewById<FrameLayout>(R.id.root)
+        val view = buildHelpScreen()
+        helpScreenView = view
+        root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        view.requestFocus()
+    }
+
+    private fun dismissHelpScreen() {
+        helpScreenView?.let { v -> (v.parent as? ViewGroup)?.removeView(v) }
+        helpScreenView = null
+    }
+
+    private fun buildHelpScreen(): View {
+        val hPad = dp(20)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                    dismissHelpScreen(); true
+                } else false
+            }
+        }
+
+        // Header
+        root.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(hPad, dp(14), dp(8), dp(14))
+                addView(
+                    TextView(context).apply {
+                        setText(R.string.help_title)
+                        setTextColor(Color.WHITE)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                    },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(
+                    ImageButton(context).apply {
+                        setImageResource(R.drawable.ic_close)
+                        setColorFilter(Color.WHITE)
+                        background = null
+                        contentDescription = getString(R.string.help_close)
+                        setOnClickListener { dismissHelpScreen() }
+                    },
+                    LinearLayout.LayoutParams(dp(48), dp(48)),
+                )
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+
+        // Scrollable content
+        val items = listOf(
+            HelpItem(R.drawable.ic_open_video,         R.string.help_open_video_title,      R.string.help_open_video_body),
+            HelpItem(R.drawable.ic_playback_controls,  R.string.help_playback_title,         R.string.help_playback_body),
+            HelpItem(R.drawable.ic_subtitle_visibility,R.string.help_subtitle_tracks_title,  R.string.help_subtitle_tracks_body),
+            HelpItem(R.drawable.ic_subtitle_tap,       R.string.help_subtitle_tap_title,     R.string.help_subtitle_tap_body),
+            HelpItem(R.drawable.ic_gestures,           R.string.help_gestures_title,         R.string.help_gestures_body),
+        )
+        val itemList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(hPad, 0, hPad, dp(20))
+            items.forEach { item -> addView(buildHelpItem(item)) }
+        }
+        root.addView(
+            ScrollView(this).apply {
+                isVerticalScrollBarEnabled = true
+                addView(itemList, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+        return root
+    }
+
+    private fun buildHelpItem(item: HelpItem): View {
+        val iconSize = dp(24)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, dp(10))
+            addView(
+                ImageView(context).apply {
+                    setImageResource(item.iconResId)
+                    setColorFilter(Color.WHITE)
+                },
+                LinearLayout.LayoutParams(iconSize, iconSize).apply { marginEnd = dp(14); topMargin = dp(2) },
+            )
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        setText(item.titleResId)
+                        setTextColor(Color.WHITE)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                    })
+                    addView(TextView(context).apply {
+                        setText(item.bodyResId)
+                        setTextColor(Color.argb(190, 255, 255, 255))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                        setLineSpacing(0f, 1.1f)
+                    })
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+        }
+    }
+
     private data class TrackMenuItem(val id: Int, val name: String)
 
     private companion object {
@@ -1693,6 +1927,13 @@ class MainActivity : ComponentActivity() {
         const val ACTION_VALUE_COPY = "copy"
         const val ACTION_VALUE_MENU = "menu"
         const val ACTION_VALUE_PROCESS_PREFIX = "process:"
+        const val STEPPER_TAG_SIZE = "stepper_size"
+        const val STEPPER_TAG_POS  = "stepper_pos"
+        const val LANGUAGE_PREFS = "language_prefs"
+        const val PREF_APP_LANGUAGE_TAG = "app_language_tag"
+        const val LANGUAGE_TAG_ENGLISH = "en"
+        const val LANGUAGE_TAG_RUSSIAN = "ru"
+        const val FEEDBACK_EMAIL = "balikhin.lb@gmail.com"
         const val PHRASE_REPLAY_THRESHOLD_MS = 1_500L
         const val PHRASE_SEEK_FALLBACK_MS = 10_000L
         const val PHRASE_SEEK_SUPPRESS_MS = 600L

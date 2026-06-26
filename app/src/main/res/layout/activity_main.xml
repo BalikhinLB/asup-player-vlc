@@ -144,15 +144,15 @@
                 android:layout_gravity="bottom"
                 android:background="@color/player_controls_background"
                 android:orientation="vertical"
-                android:paddingStart="12dp"
-                android:paddingTop="8dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="10dp">
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="4dp">
 
                 <SeekBar
                     android:id="@+id/playback_seek"
                     android:layout_width="match_parent"
-                    android:layout_height="40dp"
+                    android:layout_height="32dp"
                     android:max="1000"
                     android:progress="0" />
 
@@ -169,25 +169,25 @@
                         android:layout_weight="1"
                         android:text="@string/playback_time_placeholder"
                         android:textColor="@android:color/white"
-                        android:textSize="14sp" />
+                        android:textSize="13sp" />
 
                     <ImageButton
                         android:id="@+id/subtitle_visibility_button"
-                        android:layout_width="48dp"
-                        android:layout_height="48dp"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
                         android:background="@drawable/bg_settings_button"
                         android:contentDescription="@string/subtitle_visibility"
-                        android:padding="12dp"
+                        android:padding="10dp"
                         android:src="@drawable/ic_subtitle_visibility"
                         android:tint="@android:color/white" />
 
                     <ImageButton
                         android:id="@+id/settings_button"
-                        android:layout_width="48dp"
-                        android:layout_height="48dp"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
                         android:background="@drawable/bg_settings_button"
                         android:contentDescription="@string/player_menu"
-                        android:padding="12dp"
+                        android:padding="10dp"
                         android:src="@drawable/ic_settings"
                         android:tint="@android:color/white" />
                 </LinearLayout>

@@ -4,6 +4,11 @@ import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.media.AudioManager
+import android.provider.Settings
+import android.widget.ImageView
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import android.content.res.AssetFileDescriptor
 import android.content.res.Configuration
 import android.graphics.Color
@@ -71,6 +76,17 @@ class MainActivity : ComponentActivity() {
     private var subtitleLongPressAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
     private val controlsHandler = Handler(Looper.getMainLooper())
     private val hideControlsRunnable = Runnable { hidePlayerControls() }
+    private val hideSwipeIndicatorRunnable = Runnable { dismissSwipeIndicator() }
+
+    private enum class SwipeMode { NONE, BRIGHTNESS, VOLUME }
+    private var swipeMode = SwipeMode.NONE
+    private var swipeDownX = 0f
+    private var swipeDownY = 0f
+    private var swipeLastY = 0f
+    private var swipeConsumed = false
+    private var swipeIndicatorView: LinearLayout? = null
+    private var swipeIndicatorIsLeft = false
+    private var volumeFraction = -1f   // accumulated float volume, -1 = not yet initialised
 
     private lateinit var recentFilesStore: RecentFilesStore
     private lateinit var homeScreen: LinearLayout
@@ -366,7 +382,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (menuOverlay.visibility != View.VISIBLE) doubleTapDetector.onTouchEvent(ev)
+        if (menuOverlay.visibility != View.VISIBLE) {
+            handleSwipeGesture(ev)
+            if (!swipeConsumed) doubleTapDetector.onTouchEvent(ev)
+        }
         return super.dispatchTouchEvent(ev)
     }
 
@@ -375,6 +394,7 @@ class MainActivity : ComponentActivity() {
         dismissMenuOverlay()
         controlsHandler.removeCallbacks(progressUpdater)
         controlsHandler.removeCallbacks(hideControlsRunnable)
+        controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
         mediaPlayer.vlcVout.detachViews()
         mediaPlayer.release()
         libVlc.release()
@@ -1455,6 +1475,128 @@ class MainActivity : ComponentActivity() {
         menuOverlay.visibility = View.GONE
         menuOverlay.removeAllViews()
         scheduleControlsAutoHide()
+    }
+
+    private fun handleSwipeGesture(ev: MotionEvent) {
+        if (currentVideoUri == null) return
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeDownX = ev.x
+                swipeDownY = ev.y
+                swipeLastY = ev.y
+                swipeMode = SwipeMode.NONE
+                swipeConsumed = false
+                volumeFraction = -1f
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (swipeMode == SwipeMode.NONE) {
+                    val totalDy = abs(ev.y - swipeDownY)
+                    val totalDx = abs(ev.x - swipeDownX)
+                    // Don't activate in bottom controls area
+                    val inControls = swipeDownY > controlsContainer.height - bottomControls.height - dp(16)
+                    if (!inControls && totalDy > dp(20) && totalDy > totalDx * 1.5f) {
+                        swipeMode = if (swipeDownX < controlsContainer.width / 2f) {
+                            SwipeMode.BRIGHTNESS
+                        } else {
+                            SwipeMode.VOLUME
+                        }
+                        swipeConsumed = true
+                    }
+                }
+                if (swipeMode != SwipeMode.NONE) {
+                    val delta = (swipeLastY - ev.y) / controlsContainer.height  // + = up = increase
+                    swipeLastY = ev.y
+                    when (swipeMode) {
+                        SwipeMode.BRIGHTNESS -> adjustBrightness(delta)
+                        SwipeMode.VOLUME -> adjustVolume(delta)
+                        else -> {}
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (swipeConsumed) {
+                    controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
+                    controlsHandler.postDelayed(hideSwipeIndicatorRunnable, 1500)
+                }
+                swipeMode = SwipeMode.NONE
+            }
+        }
+    }
+
+    private fun adjustBrightness(deltaFraction: Float) {
+        val lp = window.attributes
+        val current = if (lp.screenBrightness < 0f) {
+            try {
+                Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+            } catch (_: Exception) { 0.5f }
+        } else {
+            lp.screenBrightness
+        }
+        lp.screenBrightness = (current + deltaFraction).coerceIn(0.01f, 1.0f)
+        window.attributes = lp
+        showSwipeIndicator(R.drawable.ic_brightness, lp.screenBrightness, isLeft = false)
+    }
+
+    private fun adjustVolume(deltaFraction: Float) {
+        val audio = getSystemService(AudioManager::class.java)
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (volumeFraction < 0f) {
+            volumeFraction = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
+        }
+        volumeFraction = (volumeFraction + deltaFraction).coerceIn(0f, 1f)
+        val newVolume = (volumeFraction * max).roundToInt().coerceIn(0, max)
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
+        showSwipeIndicator(R.drawable.ic_volume, volumeFraction, isLeft = true)
+    }
+
+    private fun showSwipeIndicator(iconRes: Int, level: Float, isLeft: Boolean) {
+        controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
+
+        if (swipeIndicatorView != null && swipeIndicatorIsLeft != isLeft) {
+            dismissSwipeIndicator()
+        }
+
+        val indicator = swipeIndicatorView ?: run {
+            val icon = ImageView(this).apply {
+                setColorFilter(Color.WHITE)
+            }
+            val label = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                gravity = Gravity.CENTER
+            }
+            val view = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundResource(R.drawable.bg_player_popup)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                gravity = Gravity.CENTER
+                addView(icon, LinearLayout.LayoutParams(dp(24), dp(24)))
+                addView(label, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).also { it.topMargin = dp(6) })
+            }
+            val lp = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.CENTER_VERTICAL or (if (isLeft) Gravity.START else Gravity.END)
+                val margin = dp(24)
+                if (isLeft) marginStart = margin else marginEnd = margin
+            }
+            controlsContainer.addView(view, lp)
+            swipeIndicatorView = view
+            swipeIndicatorIsLeft = isLeft
+            view
+        }
+
+        (indicator.getChildAt(0) as ImageView).setImageResource(iconRes)
+        (indicator.getChildAt(1) as TextView).text = "${(level * 100).roundToInt()}%"
+    }
+
+    private fun dismissSwipeIndicator() {
+        swipeIndicatorView?.let { controlsContainer.removeView(it) }
+        swipeIndicatorView = null
     }
 
     private fun applySystemBarsMode(configuration: Configuration) {

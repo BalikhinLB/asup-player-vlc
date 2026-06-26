@@ -125,19 +125,17 @@
                 android:src="@drawable/ic_open_video"
                 android:tint="@android:color/white" />
 
-            <Button
+            <ImageButton
                 android:id="@+id/play_pause_button"
                 android:layout_width="76dp"
                 android:layout_height="76dp"
                 android:layout_gravity="center"
                 android:background="@drawable/bg_play_pause_button"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="@string/pause"
-                android:textAllCaps="false"
-                android:textColor="@android:color/white"
-                android:textSize="24sp" />
+                android:contentDescription="@string/pause"
+                android:padding="18dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_pause"
+                android:tint="@android:color/white" />
 
             <LinearLayout
                 android:id="@+id/bottom_controls"

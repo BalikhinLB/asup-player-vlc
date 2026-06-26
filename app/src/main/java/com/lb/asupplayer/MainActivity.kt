@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var playerControls: FrameLayout
     private lateinit var playbackSeek: SeekBar
     private lateinit var playbackTime: TextView
-    private lateinit var playPauseButton: Button
+    private lateinit var playPauseButton: ImageButton
     private lateinit var settingsButton: ImageButton
     private lateinit var subtitleView: TextView
     private lateinit var subtitleIndexingIndicator: View
@@ -1369,7 +1369,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updatePlaybackState() {
-        playPauseButton.setText(if (mediaPlayer.isPlaying) R.string.pause else R.string.play)
+        playPauseButton.setImageResource(if (mediaPlayer.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
     }
 
     private fun updatePlaybackProgress() {

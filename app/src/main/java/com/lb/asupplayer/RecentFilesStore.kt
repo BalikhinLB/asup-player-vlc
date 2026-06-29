@@ -16,6 +16,7 @@ data class RecentFile(
     val audioTrackId: Int = AUDIO_NOT_SET,     // AUDIO_NOT_SET = don't restore
     val subtitleSizePercent: Int = DEFAULT_SUB_SIZE,
     val subtitlePositionPercent: Int = DEFAULT_SUB_POS,
+    val externalSubtitleUri: Uri? = null,
 ) {
     companion object {
         const val AUDIO_NOT_SET = Int.MIN_VALUE
@@ -39,6 +40,7 @@ class RecentFilesStore(context: Context) {
             audioTrackId = prefs.getInt(keyAudId(hash), RecentFile.AUDIO_NOT_SET),
             subtitleSizePercent = prefs.getInt(keySubSz(hash), RecentFile.DEFAULT_SUB_SIZE),
             subtitlePositionPercent = prefs.getInt(keySubPos(hash), RecentFile.DEFAULT_SUB_POS),
+            externalSubtitleUri = prefs.getString(keyExtSub(hash), null)?.let { Uri.parse(it) },
         )
     }
 
@@ -51,6 +53,7 @@ class RecentFilesStore(context: Context) {
         audioTrackId: Int = RecentFile.AUDIO_NOT_SET,
         subtitleSizePercent: Int = RecentFile.DEFAULT_SUB_SIZE,
         subtitlePositionPercent: Int = RecentFile.DEFAULT_SUB_POS,
+        externalSubtitleUri: Uri? = null,
     ) {
         val uriStr = uri.toString()
         val hash = hash(uriStr)
@@ -64,6 +67,7 @@ class RecentFilesStore(context: Context) {
             .putInt(keyAudId(hash), audioTrackId)
             .putInt(keySubSz(hash), subtitleSizePercent)
             .putInt(keySubPos(hash), subtitlePositionPercent)
+            .apply { if (externalSubtitleUri != null) putString(keyExtSub(hash), externalSubtitleUri.toString()) else remove(keyExtSub(hash)) }
             .apply()
         saveSubtitles(hash, tracks)
     }
@@ -75,6 +79,7 @@ class RecentFilesStore(context: Context) {
         audioTrackId: Int,
         subtitleSizePercent: Int,
         subtitlePositionPercent: Int,
+        externalSubtitleUri: Uri? = null,
     ) {
         val hash = hash(uri.toString())
         if (!prefs.contains(keyName(hash))) return
@@ -84,6 +89,7 @@ class RecentFilesStore(context: Context) {
             .putInt(keyAudId(hash), audioTrackId)
             .putInt(keySubSz(hash), subtitleSizePercent)
             .putInt(keySubPos(hash), subtitlePositionPercent)
+            .apply { if (externalSubtitleUri != null) putString(keyExtSub(hash), externalSubtitleUri.toString()) else remove(keyExtSub(hash)) }
             .apply()
     }
 
@@ -159,12 +165,47 @@ class RecentFilesStore(context: Context) {
                 .remove(keyAudId(hash))
                 .remove(keySubSz(hash))
                 .remove(keySubPos(hash))
+                .remove(keyExtSub(hash))
             subtitleFile(hash).delete()
+            externalSubtitleFile(hash).delete()
         }
         editor.apply()
     }
 
+    fun saveExternalSubtitle(videoUri: Uri, track: SubtitleTrack) {
+        val hash = hash(videoUri.toString())
+        if (!prefs.contains(keyName(hash))) return
+        try {
+            val ea = JSONArray()
+            for (e in track.entries) {
+                ea.put(JSONArray().apply { put(e.startMs); put(e.endMs); put(e.text) })
+            }
+            externalSubtitleFile(hash).writeText(
+                JSONObject().apply {
+                    put("id", track.id)
+                    put("name", track.name)
+                    put("entries", ea)
+                }.toString()
+            )
+        } catch (_: Exception) {}
+    }
+
+    fun loadExternalSubtitle(videoUri: Uri): SubtitleTrack? {
+        val file = externalSubtitleFile(hash(videoUri.toString()))
+        if (!file.exists()) return null
+        return try {
+            val obj = JSONObject(file.readText())
+            val ea = obj.getJSONArray("entries")
+            val entries = (0 until ea.length()).map { j ->
+                val e = ea.getJSONArray(j)
+                SubtitleEntry(e.getLong(0), e.getLong(1), e.getString(2))
+            }
+            SubtitleTrack(obj.getInt("id"), obj.getString("name"), entries)
+        } catch (_: Exception) { null }
+    }
+
     private fun subtitleFile(hash: String) = File(subtitlesDir, "$hash.json")
+    private fun externalSubtitleFile(hash: String) = File(subtitlesDir, "ext_$hash.json")
     private fun hash(uriStr: String) = uriStr.hashCode().toString()
     private fun keyName(hash: String) = "name_$hash"
     private fun keyPos(hash: String) = "pos_$hash"
@@ -172,6 +213,7 @@ class RecentFilesStore(context: Context) {
     private fun keyAudId(hash: String) = "aud_id_$hash"
     private fun keySubSz(hash: String) = "sub_sz_$hash"
     private fun keySubPos(hash: String) = "sub_pos_$hash"
+    private fun keyExtSub(hash: String) = "ext_sub_$hash"
 
     companion object {
         private const val PREFS = "recent_files"

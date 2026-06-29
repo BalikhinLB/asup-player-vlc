@@ -419,7 +419,7 @@ class MainActivity : ComponentActivity() {
         subtitleExecutor.shutdown()
     }
 
-    private fun playVideo(uri: Uri, startPositionMs: Long, cachedSubtitles: List<SubtitleTrack>? = null) {
+    private fun playVideo(uri: Uri, startPositionMs: Long, cachedSubtitles: List<SubtitleTrack>? = null, cachedExternalTrack: SubtitleTrack? = null) {
         val newPfd = try {
             contentResolver.openFileDescriptor(uri, "r")
         } catch (_: Exception) { null }
@@ -438,7 +438,7 @@ class MainActivity : ComponentActivity() {
         subtitleVisibilityButton.setImageResource(R.drawable.ic_subtitle_visibility)
 
         internalSubtitleTracks = emptyList()
-        externalSubtitleTrack = null
+        externalSubtitleTrack = cachedExternalTrack
         activeSubtitleTrack = null
         subtitleRenderer.reset()
 
@@ -453,7 +453,11 @@ class MainActivity : ComponentActivity() {
         if (cachedSubtitles != null) {
             internalSubtitleTracks = cachedSubtitles
             if (pendingSubtitleTrackId >= 0) {
-                activeSubtitleTrack = cachedSubtitles.find { it.id == pendingSubtitleTrackId }
+                activeSubtitleTrack = if (pendingSubtitleTrackId == EXTERNAL_TRACK_ID) {
+                    cachedExternalTrack
+                } else {
+                    cachedSubtitles.find { it.id == pendingSubtitleTrackId }
+                }
                 pendingSubtitleTrackId = -1
             }
             subtitleRenderer.activeTrack = activeSubtitleTrack
@@ -468,7 +472,11 @@ class MainActivity : ComponentActivity() {
             subtitleIndexingIndicator.visibility = View.VISIBLE
             startMkvSubtitleExtraction(uri, jobId, startPositionMs)
         }
-        externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
+        // If content is already cached, don't re-fetch from URI (avoids stale permission errors).
+        // Fall back to URI only when the cache file is absent.
+        if (cachedExternalTrack == null) {
+            externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
+        }
     }
 
     private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int, startPositionMs: Long) {
@@ -487,8 +495,10 @@ class MainActivity : ComponentActivity() {
                         name = currentVideoName,
                         positionMs = 0L,
                         tracks = tracks,
+                        activeSubtitleTrackId = activeSubtitleTrack?.id ?: -1,
                         subtitleSizePercent = subtitleSizePercent,
                         subtitlePositionPercent = subtitlePositionPercent,
+                        externalSubtitleUri = externalSubtitleUri,
                     )
                     mpvView.play()
                     updatePlaybackState()
@@ -511,6 +521,8 @@ class MainActivity : ComponentActivity() {
                         externalSubtitleTrack = track
                         activeSubtitleTrack = track
                         subtitleRenderer.activeTrack = track
+                        currentVideoUri?.let { recentFilesStore.saveExternalSubtitle(it, track) }
+                        saveCurrentSettings()
                         Toast.makeText(
                             this,
                             getString(R.string.subtitle_loaded, name),
@@ -631,14 +643,15 @@ class MainActivity : ComponentActivity() {
         dismissMenuOverlay()
         recentFilesStore.moveToFront(recent.uri)
         val cached = recentFilesStore.loadSubtitles(recent.uri)
-        externalSubtitleUri = null
+        val cachedExternal = recentFilesStore.loadExternalSubtitle(recent.uri)
+        externalSubtitleUri = recent.externalSubtitleUri
         subtitleSizePercent = recent.subtitleSizePercent
         subtitlePositionPercent = recent.subtitlePositionPercent
         pendingSubtitleTrackId = recent.activeSubtitleTrackId
         pendingAudioTrackId = recent.audioTrackId
         applySubtitleTextSize()
         applySubtitlePosition()
-        playVideo(recent.uri, recent.lastPositionMs, cached)
+        playVideo(recent.uri, recent.lastPositionMs, cached, cachedExternalTrack = cachedExternal)
     }
 
     private fun populateHomeScreen() {
@@ -754,6 +767,7 @@ class MainActivity : ComponentActivity() {
                 audioTrackId = mpvView.audioTrack,
                 subtitleSizePercent = subtitleSizePercent,
                 subtitlePositionPercent = subtitlePositionPercent,
+                externalSubtitleUri = externalSubtitleUri,
             )
         }
     }

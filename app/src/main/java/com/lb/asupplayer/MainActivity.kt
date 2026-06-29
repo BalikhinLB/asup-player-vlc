@@ -14,7 +14,6 @@ import android.widget.ImageView
 import android.widget.ScrollView
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import android.content.res.AssetFileDescriptor
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
@@ -28,8 +27,6 @@ import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -48,22 +45,19 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import `is`.xyz.mpv.MPVLib
+import com.lb.asupplayer.mpv.MPVView
 import com.lb.asupplayer.subtitle.MkvSubtitleExtractor
 import com.lb.asupplayer.subtitle.SrtParser
 import com.lb.asupplayer.subtitle.SubtitleRenderer
 import com.lb.asupplayer.subtitle.SubtitleTrack
-import java.io.IOException
+import android.os.ParcelFileDescriptor
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.Media
-import org.videolan.libvlc.MediaPlayer
 
 class MainActivity : ComponentActivity() {
-    private lateinit var libVlc: LibVLC
-    private lateinit var mediaPlayer: MediaPlayer
-    private lateinit var videoSurfaceView: SurfaceView
+    private lateinit var mpvView: MPVView
     private lateinit var controlsContainer: FrameLayout
     private lateinit var openVideoButton: Button
     private lateinit var playerControls: FrameLayout
@@ -75,7 +69,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var subtitleIndexingIndicator: View
     private lateinit var indexingFileNameView: TextView
     private lateinit var subtitleRenderer: SubtitleRenderer
-    private var currentVideoDescriptor: AssetFileDescriptor? = null
     private lateinit var menuOverlay: FrameLayout
     private var currentSettingsPage: SettingsPage? = null
     private var helpScreenView: View? = null
@@ -112,10 +105,80 @@ class MainActivity : ComponentActivity() {
     private var restorePositionMs: Long = 0L
     private var isSeeking = false
     private var knownLengthMs = 0L
+    // currentPfd is the fd MPV is actively reading; prevPfd is the fd for the file MPV just
+    // stopped (kept alive until MPV_EVENT_END_FILE confirms MPV closed the old stream).
+    private var currentPfd: ParcelFileDescriptor? = null
+    private var prevPfd: ParcelFileDescriptor? = null
+    private var pendingPlay = false  // play after FILE_LOADED (used in cached path)
+    private val mpvObserver = object : MPVLib.EventObserver {
+        override fun eventProperty(property: String) {}
+        override fun eventProperty(property: String, value: Long) {}
+        override fun eventProperty(property: String, value: Boolean) {
+            when (property) {
+                "pause" -> runOnUiThread {
+                    if (!value) {
+                        setKeepScreenOn(true)
+                        startProgressUpdates()
+                        showPlayerControls()
+                    } else {
+                        setKeepScreenOn(false)
+                        cancelControlsAutoHide()
+                        stopProgressUpdates()
+                    }
+                    updatePlaybackState()
+                }
+                "eof-reached" -> if (value) runOnUiThread {
+                    setKeepScreenOn(false)
+                    hidePlayerControls()
+                    stopProgressUpdates()
+                    updatePlaybackState()
+                }
+            }
+        }
+        override fun eventProperty(property: String, value: String) {}
+        override fun eventProperty(property: String, value: Double) {
+            if (property == "time-pos" && phraseSeekTargetMs < 0L) {
+                val ms = (value * 1000).toLong().coerceAtLeast(0L)
+                runOnUiThread { subtitleRenderer.onTimeChanged(ms) }
+            }
+        }
+        override fun event(eventId: Int) {
+            when (eventId) {
+                MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> runOnUiThread {
+                    // MPV has fully opened the new file — safe to release the old fd now
+                    prevPfd?.close(); prevPfd = null
+                    if (restorePositionMs > 0L) {
+                        mpvView.seekTo(restorePositionMs)
+                        restorePositionMs = 0L
+                    }
+                    if (pendingAudioTrackId != RecentFile.AUDIO_NOT_SET) {
+                        mpvView.audioTrack = pendingAudioTrackId
+                        pendingAudioTrackId = RecentFile.AUDIO_NOT_SET
+                    }
+                    if (coverHomeScreenUntilPlaying) {
+                        homeScreen.visibility = View.GONE
+                        coverHomeScreenUntilPlaying = false
+                    }
+                    if (pendingPlay) {
+                        pendingPlay = false
+                        mpvView.play()
+                    }
+                    updatePlaybackProgress()
+                }
+                MPVLib.MpvEvent.MPV_EVENT_END_FILE -> runOnUiThread {
+                    // MPV has stopped the old stream — safe to close the old fd
+                    prevPfd?.close(); prevPfd = null
+                    setKeepScreenOn(false)
+                    hidePlayerControls()
+                    stopProgressUpdates()
+                    updatePlaybackState()
+                }
+            }
+        }
+    }
     private var subtitleSizePercent = DEFAULT_SUBTITLE_SIZE_PERCENT
     private var subtitlePositionPercent: Int = 15
 
-    private var pausedPositionMs = -1L
     private var internalSubtitleTracks: List<SubtitleTrack> = emptyList()
     private var externalSubtitleTrack: SubtitleTrack? = null
     private var activeSubtitleTrack: SubtitleTrack? = null
@@ -171,13 +234,12 @@ class MainActivity : ComponentActivity() {
         externalSubtitleUri = savedInstanceState?.getParcelableCompat(KEY_SUBTITLE_URI)
         restorePositionMs = savedInstanceState?.getLong(KEY_POSITION_MS) ?: 0L
 
-        libVlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames"))
-        mediaPlayer = MediaPlayer(libVlc)
-
         recentFilesStore = RecentFilesStore(this)
 
         setContentView(R.layout.activity_main)
-        videoSurfaceView = findViewById(R.id.video_surface)
+        mpvView = findViewById(R.id.video_surface)
+        mpvView.initialize(filesDir.absolutePath, cacheDir.absolutePath)
+        mpvView.addObserver(mpvObserver)
         controlsContainer = findViewById(R.id.controls_container)
         homeScreen = findViewById(R.id.home_screen)
         if (currentVideoUri != null) homeScreen.visibility = View.GONE
@@ -206,7 +268,7 @@ class MainActivity : ComponentActivity() {
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
                     // When paused and tap is on visible subtitle — let the subtitle handler deal with it
-                    if (!mediaPlayer.isPlaying &&
+                    if (!mpvView.isPlaying &&
                         subtitleView.visibility == View.VISIBLE &&
                         subtitleView.containsRaw(e)
                     ) return true
@@ -220,7 +282,7 @@ class MainActivity : ComponentActivity() {
                 }
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
-                    if (!mediaPlayer.isPlaying &&
+                    if (!mpvView.isPlaying &&
                         subtitleView.visibility == View.VISIBLE &&
                         subtitleView.containsRaw(e)
                     ) return true  // subtitle gesture detector handles it
@@ -234,22 +296,6 @@ class MainActivity : ComponentActivity() {
         applySubtitlePosition()
         applySubtitleTextSize()
 
-        videoSurfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                if (currentVideoUri != null) attachPlayerViews()
-            }
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                // Size is handled in attachPlayerViews() and onConfigurationChanged().
-            }
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                // Pause before detaching: VLC keeps rendering for ~20ms after detach,
-                // causing BufferQueue abandoned errors and H.264 reference frame corruption.
-                pausedPositionMs = mediaPlayer.time.coerceAtLeast(0L)
-                mediaPlayer.pause()
-                mediaPlayer.vlcVout.detachViews()
-            }
-        })
-
         openVideoButton.setOnClickListener {
             openDocument.launch(arrayOf("video/*"))
         }
@@ -262,7 +308,7 @@ class MainActivity : ComponentActivity() {
         subtitleVisibilityButton.setOnClickListener {
             subtitlesHidden = !subtitlesHidden
             subtitleRenderer.isHidden = subtitlesHidden
-            subtitleRenderer.onTimeChanged(mediaPlayer.time)
+            subtitleRenderer.onTimeChanged(mpvView.timeMs)
             subtitleVisibilityButton.setImageResource(
                 if (subtitlesHidden) R.drawable.ic_subtitle_visibility_off
                 else R.drawable.ic_subtitle_visibility,
@@ -287,61 +333,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar) {
-                    mediaPlayer.time = progressToTime(seekBar.progress)
+                    mpvView.seekTo(progressToTime(seekBar.progress))
                     isSeeking = false
                     updatePlaybackProgress()
                     scheduleControlsAutoHide()
                 }
             },
         )
-
-        mediaPlayer.setEventListener { event ->
-            runOnUiThread {
-                when (event.type) {
-                    MediaPlayer.Event.Playing -> {
-                        if (pendingAudioTrackId != RecentFile.AUDIO_NOT_SET) {
-                            val t = mediaPlayer.time
-                            mediaPlayer.audioTrack = pendingAudioTrackId
-                            pendingAudioTrackId = RecentFile.AUDIO_NOT_SET
-                            if (t > 0L) mediaPlayer.time = t
-                        }
-                        if (coverHomeScreenUntilPlaying) {
-                            homeScreen.visibility = View.GONE
-                            coverHomeScreenUntilPlaying = false
-                        }
-                        showPlayerControls()
-                        setKeepScreenOn(true)
-                        updatePlaybackState()
-                    }
-
-                    MediaPlayer.Event.Paused -> {
-                        setKeepScreenOn(false)
-                        cancelControlsAutoHide()
-                        stopProgressUpdates()
-                        updatePlaybackState()
-                    }
-
-                    MediaPlayer.Event.Stopped,
-                    MediaPlayer.Event.EndReached,
-                    MediaPlayer.Event.EncounteredError,
-                    -> {
-                        setKeepScreenOn(false)
-                        hidePlayerControls()
-                        stopProgressUpdates()
-                        updatePlaybackState()
-                    }
-
-                    MediaPlayer.Event.LengthChanged,
-                    MediaPlayer.Event.TimeChanged,
-                    MediaPlayer.Event.ESAdded,
-                    MediaPlayer.Event.ESDeleted,
-                    MediaPlayer.Event.ESSelected,
-                    -> {
-                        updatePlaybackProgress()
-                    }
-                }
-            }
-        }
 
         ViewCompat.setOnApplyWindowInsetsListener(controlsContainer) { view, insets ->
             val navigationBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
@@ -373,21 +371,20 @@ class MainActivity : ComponentActivity() {
         super.onConfigurationChanged(newConfig)
         applySystemBarsMode(newConfig)
         ViewCompat.requestApplyInsets(controlsContainer)
-        updateVideoOutputSize()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         currentVideoUri?.let { outState.putParcelable(KEY_VIDEO_URI, it) }
         externalSubtitleUri?.let { outState.putParcelable(KEY_SUBTITLE_URI, it) }
-        outState.putLong(KEY_POSITION_MS, mediaPlayer.time.coerceAtLeast(0L))
+        outState.putLong(KEY_POSITION_MS, mpvView.timeMs)
     }
 
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
             saveCurrentSettings()
-            mediaPlayer.pause()
+            mpvView.pause()
             setKeepScreenOn(false)
         }
     }
@@ -411,72 +408,63 @@ class MainActivity : ComponentActivity() {
         controlsHandler.removeCallbacks(progressUpdater)
         controlsHandler.removeCallbacks(hideControlsRunnable)
         controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
-        mediaPlayer.vlcVout.detachViews()
-        mediaPlayer.release()
-        libVlc.release()
-        closeCurrentVideoDescriptor()
+        mpvView.removeObserver(mpvObserver)
+        mpvView.destroy()
+        currentPfd?.close()
+        prevPfd?.close()
         subtitleExecutor.shutdown()
     }
 
     private fun playVideo(uri: Uri, startPositionMs: Long, cachedSubtitles: List<SubtitleTrack>? = null) {
-        try {
-            val videoDescriptor = contentResolver.openAssetFileDescriptor(uri, "r")
-                ?: throw IOException("Content resolver returned null descriptor for $uri")
+        val newPfd = try {
+            contentResolver.openFileDescriptor(uri, "r")
+        } catch (_: Exception) { null }
+        if (newPfd == null) { onVideoOpenFailed(); return }
 
-            mediaPlayer.stop()
-            closeCurrentVideoDescriptor()
+        // Rotate fds: keep old fd alive until MPV_EVENT_END_FILE confirms MPV closed old stream.
+        prevPfd?.close()
+        prevPfd = currentPfd
+        currentPfd = newPfd
 
-            currentVideoUri = uri
-            currentVideoName = uri.displayName()
-            restorePositionMs = startPositionMs
-            currentVideoDescriptor = videoDescriptor
-            coverHomeScreenUntilPlaying = false
-            subtitlesHidden = false
-            subtitleVisibilityButton.setImageResource(R.drawable.ic_subtitle_visibility)
+        currentVideoUri = uri
+        currentVideoName = uri.displayName()
+        restorePositionMs = startPositionMs
+        coverHomeScreenUntilPlaying = false
+        subtitlesHidden = false
+        subtitleVisibilityButton.setImageResource(R.drawable.ic_subtitle_visibility)
 
-            internalSubtitleTracks = emptyList()
-            externalSubtitleTrack = null
-            activeSubtitleTrack = null
-            subtitleRenderer.reset()
+        internalSubtitleTracks = emptyList()
+        externalSubtitleTrack = null
+        activeSubtitleTrack = null
+        subtitleRenderer.reset()
 
-            val media = Media(libVlc, videoDescriptor)
-            applyDecoderOptions(media)
-            if (startPositionMs > 0L) {
-                media.addOption(":start-time=${startPositionMs / 1000.0}")
+        // pause=yes so the video starts paused; we call play() when ready.
+        MPVLib.setPropertyBoolean("pause", true)
+        MPVLib.command(arrayOf("loadfile", "fd://${newPfd.fd}", "replace"))
+        applySubtitlePosition()
+
+        val jobId = ++currentVideoJobId
+        indexingFileNameView.text = currentVideoName
+
+        if (cachedSubtitles != null) {
+            internalSubtitleTracks = cachedSubtitles
+            if (pendingSubtitleTrackId >= 0) {
+                activeSubtitleTrack = cachedSubtitles.find { it.id == pendingSubtitleTrackId }
+                pendingSubtitleTrackId = -1
             }
-            mediaPlayer.media = media
-            media.release()
-            attachPlayerViews()
-            applySubtitlePosition()
-
-            val jobId = ++currentVideoJobId
-            indexingFileNameView.text = currentVideoName
-
-            if (cachedSubtitles != null) {
-                internalSubtitleTracks = cachedSubtitles
-                if (pendingSubtitleTrackId >= 0) {
-                    activeSubtitleTrack = cachedSubtitles.find { it.id == pendingSubtitleTrackId }
-                    pendingSubtitleTrackId = -1
-                }
-                subtitleRenderer.activeTrack = activeSubtitleTrack
-                applySubtitleTextSize()
-                subtitleIndexingIndicator.visibility = View.GONE
-                // Keep homeScreen visible as a cover until VLC fires Event.Playing,
-                // so the user sees no black flash while VLC seeks to start-time.
-                coverHomeScreenUntilPlaying = (homeScreen.visibility == View.VISIBLE)
-                mediaPlayer.play()
-                updatePlaybackState()
-                startProgressUpdates()
-            } else {
-                homeScreen.visibility = View.GONE
-                subtitleIndexingIndicator.visibility = View.VISIBLE
-                startMkvSubtitleExtraction(uri, jobId, startPositionMs)
-            }
-            externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
-        } catch (e: Exception) {
-            if (e !is IOException && e !is SecurityException) throw e
-            onVideoOpenFailed()
+            subtitleRenderer.activeTrack = activeSubtitleTrack
+            applySubtitleTextSize()
+            subtitleIndexingIndicator.visibility = View.GONE
+            coverHomeScreenUntilPlaying = (homeScreen.visibility == View.VISIBLE)
+            pendingPlay = true  // play() will be called in MPV_EVENT_FILE_LOADED
+            updatePlaybackState()
+        } else {
+            pendingPlay = false
+            homeScreen.visibility = View.GONE
+            subtitleIndexingIndicator.visibility = View.VISIBLE
+            startMkvSubtitleExtraction(uri, jobId, startPositionMs)
         }
+        externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
     }
 
     private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int, startPositionMs: Long) {
@@ -498,7 +486,7 @@ class MainActivity : ComponentActivity() {
                         subtitleSizePercent = subtitleSizePercent,
                         subtitlePositionPercent = subtitlePositionPercent,
                     )
-                    mediaPlayer.play()
+                    mpvView.play()
                     updatePlaybackState()
                     showPlayerControls()
                     startProgressUpdates()
@@ -557,23 +545,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun closeCurrentVideoDescriptor() {
-        try {
-            currentVideoDescriptor?.close()
-        } catch (_: IOException) {
-            // The descriptor is already unusable; there is nothing actionable for the UI.
-        } finally {
-            currentVideoDescriptor = null
-        }
-    }
-
-    private fun attachPlayerViews() {
-        if (mediaPlayer.vlcVout.areViewsAttached()) return
-        mediaPlayer.vlcVout.setVideoView(videoSurfaceView)
-        mediaPlayer.vlcVout.attachViews()
-        updateVideoOutputSize()
-    }
-
     private fun applySubtitlePosition() {
         controlsContainer.post {
             val params = subtitleView.layoutParams as FrameLayout.LayoutParams
@@ -599,44 +570,20 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun applyDecoderOptions(media: Media) {
-        val useHardwareDecoder = Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU
-        media.setHWDecoderEnabled(useHardwareDecoder, false)
-        if (!useHardwareDecoder) {
-            media.addOption(":avcodec-hw=none")
-        }
-    }
 
-    private fun updateVideoOutputSize() {
-        videoSurfaceView.post {
-            val width = videoSurfaceView.width
-            val height = videoSurfaceView.height
-            if (width > 0 && height > 0 && mediaPlayer.vlcVout.areViewsAttached()) {
-                mediaPlayer.vlcVout.setWindowSize(width, height)
-            }
-        }
-    }
 
     private fun togglePlayback() {
-        if (mediaPlayer.isPlaying) {
-            mediaPlayer.pause()
-            setKeepScreenOn(false)
-            cancelControlsAutoHide()
+        if (mpvView.isPlaying) {
+            mpvView.pause()
         } else {
-            val seekTo = pausedPositionMs
-            pausedPositionMs = -1L
-            mediaPlayer.play()
-            if (seekTo > 0L) mediaPlayer.time = seekTo
-            setKeepScreenOn(true)
-            startProgressUpdates()
-            showPlayerControls()
+            mpvView.play()
         }
         updatePlaybackState()
     }
 
     private fun phraseSeekTo(targetMs: Long) {
         phraseSeekTargetMs = targetMs
-        mediaPlayer.time = targetMs
+        mpvView.seekTo(targetMs)
         subtitleRenderer.onTimeChanged(targetMs)
         controlsHandler.removeCallbacks(clearPhraseSeekRunnable)
         controlsHandler.postDelayed(clearPhraseSeekRunnable, PHRASE_SEEK_SUPPRESS_MS)
@@ -645,10 +592,10 @@ class MainActivity : ComponentActivity() {
     private fun seekToPrevPhrase() {
         val track = activeSubtitleTrack
         if (track == null) {
-            phraseSeekTo((mediaPlayer.time - PHRASE_SEEK_FALLBACK_MS).coerceAtLeast(0L))
+            phraseSeekTo((mpvView.timeMs - PHRASE_SEEK_FALLBACK_MS).coerceAtLeast(0L))
             return
         }
-        val currentMs = mediaPlayer.time
+        val currentMs = mpvView.timeMs
         val entries = track.entries
         val idx = entries.lastIdxAtOrBefore(currentMs)
         if (idx < 0) {
@@ -667,11 +614,11 @@ class MainActivity : ComponentActivity() {
     private fun seekToNextPhrase() {
         val track = activeSubtitleTrack
         if (track == null) {
-            val target = mediaPlayer.time + PHRASE_SEEK_FALLBACK_MS
+            val target = mpvView.timeMs + PHRASE_SEEK_FALLBACK_MS
             phraseSeekTo(if (knownLengthMs > 0L) target.coerceAtMost(knownLengthMs) else target)
             return
         }
-        val currentMs = mediaPlayer.time
+        val currentMs = mpvView.timeMs
         val idx = track.entries.firstIdxAfter(currentMs)
         if (idx >= 0) phraseSeekTo(track.entries[idx].startMs)
     }
@@ -798,9 +745,9 @@ class MainActivity : ComponentActivity() {
         currentVideoUri?.let { uri ->
             recentFilesStore.updatePlaybackState(
                 uri = uri,
-                positionMs = mediaPlayer.time.coerceAtLeast(0L),
+                positionMs = mpvView.timeMs,
                 activeSubtitleTrackId = activeSubtitleTrack?.id ?: -1,
-                audioTrackId = mediaPlayer.audioTrack,
+                audioTrackId = mpvView.audioTrack,
                 subtitleSizePercent = subtitleSizePercent,
                 subtitlePositionPercent = subtitlePositionPercent,
             )
@@ -911,19 +858,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addAudioSection(parent: LinearLayout) {
-        val audioTracks = mediaPlayer.audioTracks.toTrackMenuItems()
+        val audioTracks = mpvView.getAudioTracks()
         if (audioTracks.isEmpty()) {
             addDisabledRow(parent, getString(R.string.tracks_empty))
         } else {
             audioTracks.forEach { track ->
                 addMenuRow(
                     parent = parent,
-                    text = track.name.ifBlank { track.id.toString() },
-                    isSelected = track.id == mediaPlayer.audioTrack,
+                    text = track.name,
+                    isSelected = track.id == mpvView.audioTrack,
                 ) {
-                    val currentTime = mediaPlayer.time
-                    mediaPlayer.audioTrack = track.id
-                    mediaPlayer.time = currentTime
+                    mpvView.audioTrack = track.id
                     updatePlaybackProgress()
                     saveCurrentSettings()
                     showSettingsPopup(SettingsPage.AUDIO)
@@ -1102,7 +1047,7 @@ class MainActivity : ComponentActivity() {
         })
 
         subtitleView.setOnTouchListener { _, event ->
-            if (mediaPlayer.isPlaying) return@setOnTouchListener false
+            if (mpvView.isPlaying) return@setOnTouchListener false
             if (subtitleView.visibility != View.VISIBLE) return@setOnTouchListener false
             gestureDetector.onTouchEvent(event)
             true
@@ -1402,6 +1347,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun Uri.displayName(): String {
+
         contentResolver.query(this, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { cursor ->
                 if (cursor.moveToFirst()) {
@@ -1413,9 +1359,6 @@ class MainActivity : ComponentActivity() {
             }
         return lastPathSegment.orEmpty().ifBlank { toString() }
     }
-
-    private fun Array<MediaPlayer.TrackDescription>?.toTrackMenuItems(): List<TrackMenuItem> =
-        orEmpty().map { track -> TrackMenuItem(track.id, track.name) }
 
     private fun startProgressUpdates() {
         controlsHandler.removeCallbacks(progressUpdater)
@@ -1448,18 +1391,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updatePlaybackState() {
-        playPauseButton.setImageResource(if (mediaPlayer.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        playPauseButton.setImageResource(if (mpvView.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
     }
 
     private fun updatePlaybackProgress() {
-        knownLengthMs = mediaPlayer.length.coerceAtLeast(0L)
-        val currentTimeMs = mediaPlayer.time.coerceAtLeast(0L)
+        knownLengthMs = mpvView.durationMs
+        val currentTimeMs = mpvView.timeMs
         if (!isSeeking) {
             playbackSeek.progress = timeToProgress(currentTimeMs, knownLengthMs)
         }
         updatePlaybackTime(currentTimeMs, knownLengthMs)
         updatePlaybackState()
-        if (phraseSeekTargetMs < 0L) subtitleRenderer.onTimeChanged(currentTimeMs)
     }
 
     private fun updatePlaybackTime(currentTimeMs: Long, lengthMs: Long) {
@@ -1901,8 +1843,6 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
-
-    private data class TrackMenuItem(val id: Int, val name: String)
 
     private companion object {
         const val KEY_VIDEO_URI = "video_uri"

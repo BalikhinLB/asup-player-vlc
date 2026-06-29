@@ -348,6 +348,10 @@ class MainActivity : ComponentActivity() {
             insets
         }
 
+        controlsContainer.addOnLayoutChangeListener { _, _, _, right, bottom, _, _, oldRight, oldBottom ->
+            if (right != oldRight || bottom != oldBottom) applySubtitlePosition()
+        }
+
         applySystemBarsMode(resources.configuration)
 
         currentVideoUri?.let { uri ->

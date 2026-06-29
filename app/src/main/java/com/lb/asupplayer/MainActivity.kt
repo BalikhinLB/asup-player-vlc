@@ -1074,12 +1074,25 @@ class MainActivity : ComponentActivity() {
 
     private fun loadSubtitleTapAction() {
         val prefs = getSharedPreferences(SUBTITLE_ACTION_PREFS, MODE_PRIVATE)
+        val yandex = defaultTranslateAction()
         subtitleSingleTapAction = prefs.getString(PREF_SINGLE_TAP_ACTION, null)
-            .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+            .toSubtitleTapAction() ?: yandex
         subtitleDoubleTapAction = prefs.getString(PREF_DOUBLE_TAP_ACTION, null)
-            .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+            .toSubtitleTapAction() ?: yandex
         subtitleLongPressAction = prefs.getString(PREF_LONG_PRESS_ACTION, null)
             .toSubtitleTapAction() ?: SubtitleTapAction.ShowMenu
+    }
+
+    private fun defaultTranslateAction(): SubtitleTapAction {
+        return try {
+            packageManager.getPackageInfo("ru.yandex.translate", 0)
+            SubtitleTapAction.ProcessText(
+                "ru.yandex.translate",
+                "ru.yandex.translate.ui.activities.QuickTrActivity",
+            )
+        } catch (_: Exception) {
+            SubtitleTapAction.ShowMenu
+        }
     }
 
     private fun saveSubtitleTapAction(prefKey: String, action: SubtitleTapAction) {

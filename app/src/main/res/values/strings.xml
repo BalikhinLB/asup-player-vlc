@@ -48,5 +48,5 @@
     <string name="help_subtitle_tap_title">Subtitle actions</string>
     <string name="help_subtitle_tap_body">Open Settings → Subtitles → Tap actions. Single tap works with the tapped word, double tap and long press work with the full phrase.</string>
     <string name="help_gestures_title">Gestures</string>
-    <string name="help_gestures_body">Swipe up/down on the left side to adjust brightness, on the right side to adjust volume.</string>
+    <string name="help_gestures_body">Swipe up/down on the left side to adjust brightness, on the right side to adjust volume. Swipe left on the left side to rewind 10 seconds, swipe right on the right side to skip forward 10 seconds.</string>
 </resources>

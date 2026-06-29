@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
     private val hideControlsRunnable = Runnable { hidePlayerControls() }
     private val hideSwipeIndicatorRunnable = Runnable { dismissSwipeIndicator() }
 
-    private enum class SwipeMode { NONE, BRIGHTNESS, VOLUME }
+    private enum class SwipeMode { NONE, BRIGHTNESS, VOLUME, SEEK_BACK, SEEK_FORWARD }
     private var swipeMode = SwipeMode.NONE
     private var swipeDownX = 0f
     private var swipeDownY = 0f
@@ -1520,6 +1520,16 @@ class MainActivity : ComponentActivity() {
                             SwipeMode.VOLUME
                         }
                         swipeConsumed = true
+                    } else if (!inControls && totalDx > dp(40) && totalDx > totalDy * 1.5f) {
+                        val dx = ev.x - swipeDownX
+                        val isLeftHalf = swipeDownX < controlsContainer.width / 2f
+                        if (isLeftHalf && dx < 0) {
+                            swipeMode = SwipeMode.SEEK_BACK
+                            swipeConsumed = true
+                        } else if (!isLeftHalf && dx > 0) {
+                            swipeMode = SwipeMode.SEEK_FORWARD
+                            swipeConsumed = true
+                        }
                     }
                 }
                 if (swipeMode != SwipeMode.NONE) {
@@ -1534,8 +1544,21 @@ class MainActivity : ComponentActivity() {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (swipeConsumed) {
-                    controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
-                    controlsHandler.postDelayed(hideSwipeIndicatorRunnable, 1500)
+                    when (swipeMode) {
+                        SwipeMode.SEEK_BACK -> {
+                            mpvView.seekTo((mpvView.timeMs - SEEK_STEP_MS).coerceAtLeast(0L))
+                            updatePlaybackProgress()
+                        }
+                        SwipeMode.SEEK_FORWARD -> {
+                            val target = mpvView.timeMs + SEEK_STEP_MS
+                            mpvView.seekTo(if (knownLengthMs > 0L) target.coerceAtMost(knownLengthMs) else target)
+                            updatePlaybackProgress()
+                        }
+                        else -> {
+                            controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
+                            controlsHandler.postDelayed(hideSwipeIndicatorRunnable, 1500)
+                        }
+                    }
                 }
                 swipeMode = SwipeMode.NONE
             }
@@ -1878,6 +1901,7 @@ class MainActivity : ComponentActivity() {
         const val LANGUAGE_TAG_ENGLISH = "en"
         const val LANGUAGE_TAG_RUSSIAN = "ru"
         const val FEEDBACK_EMAIL = "balikhin.lb@gmail.com"
+        const val SEEK_STEP_MS = 10_000L
         const val PHRASE_REPLAY_THRESHOLD_MS = 1_500L
         const val PHRASE_SEEK_FALLBACK_MS = 10_000L
         const val PHRASE_SEEK_SUPPRESS_MS = 600L

@@ -16,7 +16,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+*.keystore
+*.jks
 keystore.properties
-release.keystore
 /.nessy
 .vscode

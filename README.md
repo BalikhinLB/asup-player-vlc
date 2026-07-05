@@ -38,6 +38,53 @@ The debug APK is output to:
 app/build/outputs/apk/debug/
 ```
 
+## Signed Release Build
+
+The release build is signed through `app/build.gradle.kts` using a root-level
+`keystore.properties` file. Keep the keystore and passwords private; this repo's
+`.gitignore` excludes `*.keystore`, `*.jks`, and `keystore.properties`.
+
+Create a release keystore if you do not already have one:
+
+```sh
+keytool -genkeypair -v \
+  -keystore release.keystore \
+  -alias asup-player \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000
+```
+
+Create `keystore.properties` in the repository root:
+
+```properties
+storeFile=release.keystore
+storePassword=your-store-password
+keyAlias=asup-player
+keyPassword=your-key-password
+```
+
+Then build the signed release APK:
+
+```sh
+./gradlew :app:assembleRelease
+```
+
+The signed APK is output to:
+
+```
+app/build/outputs/apk/release/
+```
+
+Optional signature check:
+
+```sh
+apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+Keep the same release keystore for future versions. APK updates signed with a
+different key cannot be installed over the previous release.
+
 ## Project Structure
 
 ```

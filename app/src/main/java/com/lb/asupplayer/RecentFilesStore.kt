@@ -7,6 +7,8 @@ import com.lb.asupplayer.subtitle.SubtitleTrack
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import androidx.core.net.toUri
+import androidx.core.content.edit
 
 data class RecentFile(
     val uri: Uri,
@@ -33,14 +35,14 @@ class RecentFilesStore(context: Context) {
         val hash = hash(uriStr)
         val name = prefs.getString(keyName(hash), null) ?: return@mapNotNull null
         RecentFile(
-            uri = Uri.parse(uriStr),
+            uri = uriStr.toUri(),
             displayName = name,
             lastPositionMs = prefs.getLong(keyPos(hash), 0L),
             activeSubtitleTrackId = prefs.getInt(keySubId(hash), -1),
             audioTrackId = prefs.getInt(keyAudId(hash), RecentFile.AUDIO_NOT_SET),
             subtitleSizePercent = prefs.getInt(keySubSz(hash), RecentFile.DEFAULT_SUB_SIZE),
             subtitlePositionPercent = prefs.getInt(keySubPos(hash), RecentFile.DEFAULT_SUB_POS),
-            externalSubtitleUri = prefs.getString(keyExtSub(hash), null)?.let { Uri.parse(it) },
+            externalSubtitleUri = prefs.getString(keyExtSub(hash), null)?.toUri(),
         )
     }
 
@@ -59,16 +61,21 @@ class RecentFilesStore(context: Context) {
         val hash = hash(uriStr)
         val list = uriList().toMutableList().also { it.remove(uriStr); it.add(0, uriStr) }
         if (list.size > MAX) pruneOldest(list.drop(MAX))
-        prefs.edit()
-            .putString(KEY_URIS, JSONArray(list.take(MAX)).toString())
-            .putString(keyName(hash), name)
-            .putLong(keyPos(hash), positionMs)
-            .putInt(keySubId(hash), activeSubtitleTrackId)
-            .putInt(keyAudId(hash), audioTrackId)
-            .putInt(keySubSz(hash), subtitleSizePercent)
-            .putInt(keySubPos(hash), subtitlePositionPercent)
-            .apply { if (externalSubtitleUri != null) putString(keyExtSub(hash), externalSubtitleUri.toString()) else remove(keyExtSub(hash)) }
-            .apply()
+        prefs.edit {
+            putString(KEY_URIS, JSONArray(list.take(MAX)).toString())
+                .putString(keyName(hash), name)
+                .putLong(keyPos(hash), positionMs)
+                .putInt(keySubId(hash), activeSubtitleTrackId)
+                .putInt(keyAudId(hash), audioTrackId)
+                .putInt(keySubSz(hash), subtitleSizePercent)
+                .putInt(keySubPos(hash), subtitlePositionPercent)
+                .apply {
+                    if (externalSubtitleUri != null) putString(
+                        keyExtSub(hash),
+                        externalSubtitleUri.toString()
+                    ) else remove(keyExtSub(hash))
+                }
+        }
         saveSubtitles(hash, tracks)
     }
 
@@ -83,14 +90,19 @@ class RecentFilesStore(context: Context) {
     ) {
         val hash = hash(uri.toString())
         if (!prefs.contains(keyName(hash))) return
-        prefs.edit()
-            .putLong(keyPos(hash), positionMs)
-            .putInt(keySubId(hash), activeSubtitleTrackId)
-            .putInt(keyAudId(hash), audioTrackId)
-            .putInt(keySubSz(hash), subtitleSizePercent)
-            .putInt(keySubPos(hash), subtitlePositionPercent)
-            .apply { if (externalSubtitleUri != null) putString(keyExtSub(hash), externalSubtitleUri.toString()) else remove(keyExtSub(hash)) }
-            .apply()
+        prefs.edit {
+            putLong(keyPos(hash), positionMs)
+                .putInt(keySubId(hash), activeSubtitleTrackId)
+                .putInt(keyAudId(hash), audioTrackId)
+                .putInt(keySubSz(hash), subtitleSizePercent)
+                .putInt(keySubPos(hash), subtitlePositionPercent)
+                .apply {
+                    if (externalSubtitleUri != null) putString(
+                        keyExtSub(hash),
+                        externalSubtitleUri.toString()
+                    ) else remove(keyExtSub(hash))
+                }
+        }
     }
 
     fun moveToFront(uri: Uri) {
@@ -99,7 +111,7 @@ class RecentFilesStore(context: Context) {
         if (!list.contains(uriStr)) return
         list.remove(uriStr)
         list.add(0, uriStr)
-        prefs.edit().putString(KEY_URIS, JSONArray(list).toString()).apply()
+        prefs.edit { putString(KEY_URIS, JSONArray(list).toString()) }
     }
 
     /**
@@ -156,20 +168,20 @@ class RecentFilesStore(context: Context) {
     }
 
     private fun pruneOldest(removed: List<String>) {
-        val editor = prefs.edit()
-        for (uriStr in removed) {
-            val hash = hash(uriStr)
-            editor.remove(keyName(hash))
-                .remove(keyPos(hash))
-                .remove(keySubId(hash))
-                .remove(keyAudId(hash))
-                .remove(keySubSz(hash))
-                .remove(keySubPos(hash))
-                .remove(keyExtSub(hash))
-            subtitleFile(hash).delete()
-            externalSubtitleFile(hash).delete()
+        prefs.edit {
+            for (uriStr in removed) {
+                val hash = hash(uriStr)
+                remove(keyName(hash))
+                    .remove(keyPos(hash))
+                    .remove(keySubId(hash))
+                    .remove(keyAudId(hash))
+                    .remove(keySubSz(hash))
+                    .remove(keySubPos(hash))
+                    .remove(keyExtSub(hash))
+                subtitleFile(hash).delete()
+                externalSubtitleFile(hash).delete()
+            }
         }
-        editor.apply()
     }
 
     fun saveExternalSubtitle(videoUri: Uri, track: SubtitleTrack) {

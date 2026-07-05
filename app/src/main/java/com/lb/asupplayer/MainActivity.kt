@@ -470,7 +470,7 @@ class MainActivity : ComponentActivity() {
             pendingPlay = false
             homeScreen.visibility = View.GONE
             subtitleIndexingIndicator.visibility = View.VISIBLE
-            startMkvSubtitleExtraction(uri, jobId, startPositionMs)
+            startMkvSubtitleExtraction(uri, jobId)
         }
         // If content is already cached, don't re-fetch from URI (avoids stale permission errors).
         // Fall back to URI only when the cache file is absent.
@@ -479,7 +479,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int, startPositionMs: Long) {
+    private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int) {
         subtitleExecutor.execute {
             val tracks = try {
                 MkvSubtitleExtractor().extract(applicationContext, uri)

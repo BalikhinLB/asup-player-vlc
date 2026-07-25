@@ -9,6 +9,10 @@ import android.view.SurfaceView
 // Contains only the essential code needed to get a picture on the screen
 
 abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(context, attrs), SurfaceHolder.Callback {
+    private var surfaceAttached = false
+    private var surfaceWidth = 0
+    private var surfaceHeight = 0
+
     /**
      * Initialize libmpv.
      *
@@ -74,15 +78,29 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
         MPVLib.setOptionString("vo", vo)
     }
 
+    fun restoreVideoOutput() {
+        if (!surfaceAttached || !holder.surface.isValid) return
+
+        Log.w(TAG, "restoring video output")
+        MPVLib.setOptionString("force-window", "yes")
+        if (surfaceWidth > 0 && surfaceHeight > 0) {
+            MPVLib.setPropertyString("android-surface-size", "${surfaceWidth}x$surfaceHeight")
+        }
+        MPVLib.setPropertyString("vo", voInUse)
+    }
+
     // Surface callbacks
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        surfaceWidth = width
+        surfaceHeight = height
         MPVLib.setPropertyString("android-surface-size", "${width}x$height")
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.w(TAG, "attaching surface")
         MPVLib.attachSurface(holder.surface)
+        surfaceAttached = true
         // This forces mpv to render subs/osd/whatever into our surface even if it would ordinarily not
         MPVLib.setOptionString("force-window", "yes")
 
@@ -97,6 +115,9 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         Log.w(TAG, "detaching surface")
+        surfaceAttached = false
+        surfaceWidth = 0
+        surfaceHeight = 0
         MPVLib.setPropertyString("vo", "null")
         MPVLib.setPropertyString("force-window", "no")
         MPVLib.detachSurface()

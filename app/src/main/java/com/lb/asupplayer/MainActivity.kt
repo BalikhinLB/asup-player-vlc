@@ -400,6 +400,16 @@ class MainActivity : ComponentActivity() {
         ViewCompat.requestApplyInsets(controlsContainer)
     }
 
+    override fun onStart() {
+        super.onStart()
+        restoreVideoOutputAfterResume()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restoreVideoOutputAfterResume()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         currentVideoUri?.let { outState.putParcelable(KEY_VIDEO_URI, it) }
@@ -418,7 +428,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) applySystemBarsMode(resources.configuration)
+        if (hasFocus) {
+            applySystemBarsMode(resources.configuration)
+            restoreVideoOutputAfterResume()
+        }
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -499,6 +512,16 @@ class MainActivity : ComponentActivity() {
         // Fall back to URI only when the cache file is absent.
         if (cachedExternalTrack == null) {
             externalSubtitleUri?.let { parseExternalSubtitle(it, jobId) }
+        }
+    }
+
+    private fun restoreVideoOutputAfterResume() {
+        if (currentVideoUri == null) return
+        controlsContainer.post {
+            if (!isDestroyed && currentVideoUri != null) {
+                mpvView.restoreVideoOutput()
+                updatePlaybackProgress()
+            }
         }
     }
 

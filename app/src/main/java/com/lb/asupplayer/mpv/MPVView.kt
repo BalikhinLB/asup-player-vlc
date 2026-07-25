@@ -27,6 +27,8 @@ class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(context, attr
         MPVLib.setOptionString("tls-verify", "no")
         MPVLib.setOptionString("gpu-context", "android")
         MPVLib.setOptionString("opengl-es", "yes")
+        MPVLib.setOptionString("sid", "no")
+        MPVLib.setOptionString("sub-visibility", "no")
 
         val cacheMegs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) 64 else 32
         MPVLib.setOptionString("demuxer-max-bytes", "${cacheMegs * 1024 * 1024}")
@@ -70,6 +72,11 @@ class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(context, attr
     fun play()  = MPVLib.setPropertyBoolean("pause", false)
     fun pause() = MPVLib.setPropertyBoolean("pause", true)
     fun stop()  = MPVLib.command(arrayOf("stop"))
+
+    fun disableNativeSubtitles() {
+        MPVLib.setPropertyString("sid", "no")
+        MPVLib.setPropertyBoolean("sub-visibility", false)
+    }
 
     fun seekTo(ms: Long) {
         MPVLib.setPropertyDouble("time-pos", ms / 1000.0)

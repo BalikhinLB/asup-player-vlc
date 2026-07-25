@@ -152,6 +152,7 @@ class MainActivity : ComponentActivity() {
                 MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> runOnUiThread {
                     // MPV has fully opened the new file — safe to release the old fd now
                     prevPfd?.close(); prevPfd = null
+                    mpvView.disableNativeSubtitles()
                     if (restorePositionMs > 0L) {
                         mpvView.seekTo(restorePositionMs)
                         restorePositionMs = 0L
@@ -481,6 +482,7 @@ class MainActivity : ComponentActivity() {
         // pause=yes so the video starts paused; we call play() when ready.
         MPVLib.setPropertyBoolean("pause", true)
         MPVLib.command(arrayOf("loadfile", "fd://${newPfd.fd}", "replace"))
+        mpvView.disableNativeSubtitles()
         applySubtitlePosition()
 
         val jobId = ++currentVideoJobId
@@ -996,6 +998,7 @@ class MainActivity : ComponentActivity() {
         ) {
             activeSubtitleTrack = null
             subtitleRenderer.activeTrack = null
+            mpvView.disableNativeSubtitles()
             saveCurrentSettings()
             showSettingsPopup(SettingsPage.SUBTITLES)
         }
@@ -1007,6 +1010,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 activeSubtitleTrack = track
                 subtitleRenderer.activeTrack = track
+                mpvView.disableNativeSubtitles()
                 saveCurrentSettings()
                 showSettingsPopup(SettingsPage.SUBTITLES)
             }

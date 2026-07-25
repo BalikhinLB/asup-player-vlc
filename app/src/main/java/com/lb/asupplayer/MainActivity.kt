@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity() {
                     }
                     if (pendingPlay) {
                         pendingPlay = false
-                        mpvView.play()
+                        startPlaybackAfterVideoOutputRestore()
                     }
                     updatePlaybackProgress()
                 }
@@ -525,6 +525,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startPlaybackAfterVideoOutputRestore() {
+        mpvView.restoreVideoOutput()
+        mpvView.play()
+        mpvView.post { mpvView.restoreVideoOutput() }
+    }
+
     private fun startMkvSubtitleExtraction(uri: Uri, jobId: Int) {
         subtitleExecutor.execute {
             val tracks = try {
@@ -546,7 +552,7 @@ class MainActivity : ComponentActivity() {
                         subtitlePositionPercent = subtitlePositionPercent,
                         externalSubtitleUri = externalSubtitleUri,
                     )
-                    mpvView.play()
+                    startPlaybackAfterVideoOutputRestore()
                     updatePlaybackState()
                     showPlayerControls()
                     startProgressUpdates()
@@ -917,7 +923,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.BOTTOM or Gravity.END,
             width = menuWidth,
             marginEnd = dp(16),
-            marginBottom = controlsContainer.paddingBottom + dp(88),
+            marginBottom = controlsContainer.paddingBottom + dp(48),
         )
     }
 
@@ -1193,7 +1199,7 @@ class MainActivity : ComponentActivity() {
         showMenuOverlay(
             content,
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
-            marginBottom = controlsContainer.paddingBottom + dp(80),
+            marginBottom = controlsContainer.paddingBottom + dp(44),
         )
     }
 

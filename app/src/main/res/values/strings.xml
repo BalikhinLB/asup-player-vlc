@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ASUP player</string>
+    <string name="app_name" translatable="false">ASUP player</string>
     <string name="find_video">Find video</string>
     <string name="play">▶</string>
     <string name="pause">||</string>
@@ -13,11 +13,14 @@
     <string name="subtitle_size">Size</string>
     <string name="subtitle_position">Position</string>
     <string name="playback_time_placeholder">00:00 / 00:00</string>
+    <string name="playback_time_format">%1$s / %2$s</string>
+    <string name="percent_value">%1$d%%</string>
     <string name="video_open_error">Failed to open video</string>
     <string name="subtitle_loaded">Subtitles loaded: %1$s</string>
     <string name="subtitle_open_error">Failed to open subtitles</string>
     <string name="subtitle_indexing">Indexing subtitles…</string>
     <string name="recent_files">Recent</string>
+    <string name="recent_resume_from">from %1$s</string>
     <string name="open_file">Open file</string>
     <string name="subtitle_visibility">Subtitle visibility</string>
     <string name="subtitle_tap_action">Subtitle tap</string>
@@ -36,6 +39,12 @@
     <string name="feedback_settings">Feedback</string>
     <string name="feedback_email_subject">ASUP player feedback</string>
     <string name="feedback_email_unavailable">No email app found</string>
+    <string name="crash_report_title">Crash detected</string>
+    <string name="crash_report_message">The app crashed during the previous launch. Send a report to the developer?</string>
+    <string name="crash_report_send">Send</string>
+    <string name="crash_report_skip">Skip</string>
+    <string name="crash_report_email_subject">Crash Report - ASUP Player</string>
+    <string name="crash_report_email_chooser">Send report</string>
     <string name="help_settings">Help</string>
     <string name="help_title">Help</string>
     <string name="help_close">Close</string>

@@ -24,8 +24,8 @@ android {
         applicationId = "com.lb.asupplayer"
         minSdk = 31
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.0.5"
+        versionCode = 7
+        versionName = "0.0.7"
     }
 
     signingConfigs {

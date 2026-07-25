@@ -1,6 +1,7 @@
 package com.lb.asupplayer
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -39,12 +40,16 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isGone
+import androidx.core.view.isVisible
 import `is`.xyz.mpv.MPVLib
 import com.lb.asupplayer.mpv.MPVView
 import com.lb.asupplayer.subtitle.MkvSubtitleExtractor
@@ -228,7 +233,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        CrashHandler.install(this)
         super.onCreate(savedInstanceState)
+
+        val crashReport = CrashHandler.collectPendingReport(this)
 
         currentVideoUri = savedInstanceState?.getParcelableCompat(KEY_VIDEO_URI)
         externalSubtitleUri = savedInstanceState?.getParcelableCompat(KEY_SUBTITLE_URI)
@@ -237,8 +245,11 @@ class MainActivity : ComponentActivity() {
         recentFilesStore = RecentFilesStore(this)
 
         setContentView(R.layout.activity_main)
+
+        bc("before MPV initialize")
         mpvView = findViewById(R.id.video_surface)
         mpvView.initialize(filesDir.absolutePath, cacheDir.absolutePath)
+        bc("after MPV initialize")
         mpvView.addObserver(mpvObserver)
         controlsContainer = findViewById(R.id.controls_container)
         homeScreen = findViewById(R.id.home_screen)
@@ -259,8 +270,11 @@ class MainActivity : ComponentActivity() {
         menuOverlay = findViewById(R.id.menu_overlay)
         menuOverlay.setOnClickListener { dismissMenuOverlay() }
         subtitleRenderer = SubtitleRenderer(subtitleView)
+        setupBackHandler()
 
+        bc("before populateHomeScreen")
         populateHomeScreen()
+        bc("after populateHomeScreen")
 
         doubleTapDetector = GestureDetector(
             this,
@@ -269,11 +283,11 @@ class MainActivity : ComponentActivity() {
                     if (currentVideoUri == null) return false
                     // When paused and tap is on visible subtitle — let the subtitle handler deal with it
                     if (!mpvView.isPlaying &&
-                        subtitleView.visibility == View.VISIBLE &&
+                        subtitleView.isVisible &&
                         subtitleView.containsRaw(e)
                     ) return true
                     val onButton = playPauseButton.containsRaw(e) || bottomControls.containsRaw(e) || openInPlayerButton.containsRaw(e)
-                    if (playerControls.visibility == View.VISIBLE && !onButton) {
+                    if (playerControls.isVisible && !onButton) {
                         hidePlayerControls()
                     } else {
                         showPlayerControls()
@@ -283,7 +297,7 @@ class MainActivity : ComponentActivity() {
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     if (currentVideoUri == null) return false
                     if (!mpvView.isPlaying &&
-                        subtitleView.visibility == View.VISIBLE &&
+                        subtitleView.isVisible &&
                         subtitleView.containsRaw(e)
                     ) return true  // subtitle gesture detector handles it
                     if (e.x < controlsContainer.width / 2f) seekToPrevPhrase()
@@ -364,11 +378,20 @@ class MainActivity : ComponentActivity() {
                 applySubtitleTextSize()
                 applySubtitlePosition()
             }
+            bc("before playVideo")
             playVideo(uri, restorePositionMs, cached)
+            bc("after playVideo")
         }
 
         loadSubtitleTapAction()
         setupSubtitleTapHandler()
+
+        // onCreate completed without crash — safe to clear breadcrumbs
+        CrashHandler.clearBreadcrumbs(this)
+
+        if (crashReport != null) {
+            showCrashReportDialog(crashReport)
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -463,7 +486,7 @@ class MainActivity : ComponentActivity() {
             subtitleRenderer.activeTrack = activeSubtitleTrack
             applySubtitleTextSize()
             subtitleIndexingIndicator.visibility = View.GONE
-            coverHomeScreenUntilPlaying = (homeScreen.visibility == View.VISIBLE)
+            coverHomeScreenUntilPlaying = homeScreen.isVisible
             pendingPlay = true  // play() will be called in MPV_EVENT_FILE_LOADED
             updatePlaybackState()
         } else {
@@ -689,7 +712,7 @@ class MainActivity : ComponentActivity() {
         if (recent.lastPositionMs > 0L) {
             row.addView(
                 TextView(this).apply {
-                    text = "с ${formatTime(recent.lastPositionMs)}"
+                    text = getString(R.string.recent_resume_from, formatTime(recent.lastPositionMs))
                     setTextColor(Color.LTGRAY)
                     textSize = 13f
                 },
@@ -749,7 +772,7 @@ class MainActivity : ComponentActivity() {
         if (recent.lastPositionMs > 0L) {
             row.addView(
                 TextView(this).apply {
-                    text = "с ${formatTime(recent.lastPositionMs)}"
+                    text = getString(R.string.recent_resume_from, formatTime(recent.lastPositionMs))
                     setTextColor(Color.LTGRAY)
                     textSize = 12f
                 },
@@ -851,7 +874,7 @@ class MainActivity : ComponentActivity() {
             content.apply { setBackgroundResource(R.drawable.bg_player_popup) }
         } else {
             val maxH = (resources.displayMetrics.heightPixels * 0.7f).toInt()
-            android.widget.ScrollView(this).apply {
+            ScrollView(this).apply {
                 setBackgroundResource(R.drawable.bg_player_popup)
                 isVerticalScrollBarEnabled = true
                 addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -915,7 +938,7 @@ class MainActivity : ComponentActivity() {
         addStepperRow(
             parent,
             getString(R.string.subtitle_position),
-            "$subtitlePositionPercent%",
+            getString(R.string.percent_value, subtitlePositionPercent),
             valueTag = STEPPER_TAG_POS,
             onDecrement = { updateSubtitlePosition(-SUBTITLE_POS_STEP_PERCENT) },
             onIncrement = { updateSubtitlePosition(SUBTITLE_POS_STEP_PERCENT) },
@@ -927,7 +950,8 @@ class MainActivity : ComponentActivity() {
             .coerceIn(0, MAX_SUBTITLE_POS_PERCENT)
         applySubtitlePosition()
         saveCurrentSettings()
-        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_POS)?.text = "$subtitlePositionPercent%"
+        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_POS)?.text =
+            getString(R.string.percent_value, subtitlePositionPercent)
     }
 
     private fun addSubtitleTrackRows(parent: LinearLayout) {
@@ -1102,7 +1126,7 @@ class MainActivity : ComponentActivity() {
             PREF_LONG_PRESS_ACTION -> subtitleLongPressAction = action
         }
         getSharedPreferences(SUBTITLE_ACTION_PREFS, MODE_PRIVATE)
-            .edit().putString(prefKey, action.toPreferenceValue()).apply()
+            .edit { putString(prefKey, action.toPreferenceValue()) }
     }
 
     private fun handleSubtitleTap(text: String, action: SubtitleTapAction) {
@@ -1202,7 +1226,7 @@ class MainActivity : ComponentActivity() {
         return text.substring(start, end)
     }
 
-    private fun Char.isWordChar() = isLetterOrDigit() || this == '\'' || this == '\'' || this == '-'
+    private fun Char.isWordChar() = isLetterOrDigit() || this == '\'' || this == '-'
 
     private fun String?.toSubtitleTapAction(): SubtitleTapAction? = when (this) {
         null -> null
@@ -1308,7 +1332,7 @@ class MainActivity : ComponentActivity() {
         addStepperRow(
             parent,
             getString(R.string.subtitle_size),
-            "$subtitleSizePercent%",
+            getString(R.string.percent_value, subtitleSizePercent),
             valueTag = STEPPER_TAG_SIZE,
             onDecrement = { updateSubtitleSize(-SUBTITLE_SIZE_STEP_PERCENT) },
             onIncrement = { updateSubtitleSize(SUBTITLE_SIZE_STEP_PERCENT) },
@@ -1374,7 +1398,8 @@ class MainActivity : ComponentActivity() {
             .coerceIn(MIN_SUBTITLE_SIZE_PERCENT, MAX_SUBTITLE_SIZE_PERCENT)
         applySubtitleTextSize()
         saveCurrentSettings()
-        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_SIZE)?.text = "$subtitleSizePercent%"
+        menuOverlay.findViewWithTag<TextView>(STEPPER_TAG_SIZE)?.text =
+            getString(R.string.percent_value, subtitleSizePercent)
     }
 
     private fun Uri.displayName(): String {
@@ -1436,7 +1461,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updatePlaybackTime(currentTimeMs: Long, lengthMs: Long) {
-        playbackTime.text = "${formatTime(currentTimeMs)} / ${formatTime(lengthMs)}"
+        playbackTime.text = getString(
+            R.string.playback_time_format,
+            formatTime(currentTimeMs),
+            formatTime(lengthMs),
+        )
     }
 
     private fun timeToProgress(timeMs: Long, lengthMs: Long): Int =
@@ -1503,17 +1532,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun dismissMenuOverlay() {
-        if (menuOverlay.visibility == View.GONE) return
+        if (menuOverlay.isGone) return
         currentSettingsPage = null
         menuOverlay.visibility = View.GONE
         menuOverlay.removeAllViews()
         scheduleControlsAutoHide()
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    private fun setupBackHandler() {
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    handleBackPressed()
+                }
+            },
+        )
+    }
+
+    private fun handleBackPressed() {
         when (currentSettingsPage) {
-            null -> if (menuOverlay.visibility == View.VISIBLE) dismissMenuOverlay() else super.onBackPressed()
+            null -> {
+                if (menuOverlay.isVisible) {
+                    dismissMenuOverlay()
+                } else {
+                    finish()
+                }
+            }
             SettingsPage.MAIN -> dismissMenuOverlay()
             SettingsPage.AUDIO, SettingsPage.SUBTITLES -> showSettingsPopup(SettingsPage.MAIN)
             SettingsPage.SUBTITLE_ACTIONS -> showSettingsPopup(SettingsPage.SUBTITLES)
@@ -1660,7 +1705,8 @@ class MainActivity : ComponentActivity() {
         }
 
         (indicator.getChildAt(0) as ImageView).setImageResource(iconRes)
-        (indicator.getChildAt(1) as TextView).text = "${(level * 100).roundToInt()}%"
+        (indicator.getChildAt(1) as TextView).text =
+            getString(R.string.percent_value, (level * 100).roundToInt())
     }
 
     private fun dismissSwipeIndicator() {
@@ -1774,7 +1820,7 @@ class MainActivity : ComponentActivity() {
     private fun openFeedbackEmail() {
         val subject = Uri.encode(getString(R.string.feedback_email_subject))
         val intent = Intent(Intent.ACTION_SENDTO).apply {
-            data = Uri.parse("mailto:$FEEDBACK_EMAIL?subject=$subject")
+            data = "mailto:$FEEDBACK_EMAIL?subject=$subject".toUri()
         }
         try {
             startActivity(intent)
@@ -1895,6 +1941,37 @@ class MainActivity : ComponentActivity() {
                 },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
             )
+        }
+    }
+
+    private fun bc(step: String) = CrashHandler.writeBreadcrumb(this, step)
+
+    private fun showCrashReportDialog(report: String) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.crash_report_title)
+            .setMessage(R.string.crash_report_message)
+            .setPositiveButton(R.string.crash_report_send) { _, _ -> sendCrashReportEmail(report) }
+            .setNegativeButton(R.string.crash_report_skip) { _, _ ->
+                CrashHandler.clearPendingReport(this)
+            }
+            .setOnCancelListener {
+                CrashHandler.clearPendingReport(this)
+            }
+            .show()
+    }
+
+    private fun sendCrashReportEmail(report: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "message/rfc822"
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(FEEDBACK_EMAIL))
+            putExtra(Intent.EXTRA_SUBJECT, getString(R.string.crash_report_email_subject))
+            putExtra(Intent.EXTRA_TEXT, report)
+        }
+        try {
+            startActivity(Intent.createChooser(intent, getString(R.string.crash_report_email_chooser)))
+            CrashHandler.clearPendingReport(this)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.feedback_email_unavailable, Toast.LENGTH_SHORT).show()
         }
     }
 

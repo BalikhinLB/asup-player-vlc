@@ -5,6 +5,14 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep stack trace info for crash reports
+-keepattributes SourceFile,LineNumberTable
+
+# MPV native library: libplayer.so calls back into these Java classes/methods
+# by name via JNI (FindClass / GetStaticMethodID). R8 must not rename them.
+-keep class is.xyz.mpv.MPVLib {
+    native <methods>;
+    public static <methods>;
+}
+-keep class is.xyz.mpv.MPVLib$* { *; }
+-keep class is.xyz.mpv.BaseMPVView { *; }

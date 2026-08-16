@@ -123,6 +123,7 @@ class RecentFilesStore(context: Context) {
         if (!file.exists()) return null
         return try {
             val root = JSONObject(file.readText())
+            if (root.optInt("version") != SUBTITLE_CACHE_VERSION) return null
             val arr = root.getJSONArray("tracks")
             (0 until arr.length()).map { i ->
                 val t = arr.getJSONObject(i)
@@ -162,7 +163,12 @@ class RecentFilesStore(context: Context) {
                     put("entries", ea)
                 })
             }
-            subtitleFile(hash).writeText(JSONObject().apply { put("tracks", arr) }.toString())
+            subtitleFile(hash).writeText(
+                JSONObject().apply {
+                    put("version", SUBTITLE_CACHE_VERSION)
+                    put("tracks", arr)
+                }.toString(),
+            )
         } catch (_: Exception) {
         }
     }
@@ -231,5 +237,6 @@ class RecentFilesStore(context: Context) {
         private const val PREFS = "recent_files"
         private const val KEY_URIS = "uris"
         private const val MAX = 5
+        private const val SUBTITLE_CACHE_VERSION = 2
     }
 }

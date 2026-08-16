@@ -12,6 +12,8 @@ private const val DEFAULT_DURATION_MS = 3_000L
 // Matroska EBML element IDs
 private const val EBML          = 0x1A45DFA3L
 private const val SEGMENT       = 0x18538067L
+private const val INFO          = 0x1549A966L
+private const val TIMESTAMP_SCALE = 0x2AD7B1L
 private const val TRACKS        = 0x1654AE6BL
 private const val TRACK_ENTRY   = 0xAEL
 private const val TRACK_NUMBER  = 0xD7L
@@ -25,7 +27,9 @@ private const val CLUSTER_TS    = 0xE7L
 private const val SIMPLE_BLOCK  = 0xA3L
 private const val BLOCK_GROUP   = 0xA0L
 private const val BLOCK         = 0xA1L
+private const val BLOCK_DURATION = 0x9BL
 private const val TYPE_SUBTITLE = 0x11
+private const val DEFAULT_TIMESTAMP_SCALE_NS = 1_000_000L
 
 // ISO 639-2 (bibliographic + terminological) → ISO 639-1
 private val ISO639_2_TO_1 = mapOf(
@@ -70,12 +74,21 @@ class MkvSubtitleExtractor {
     }
 }
 
-private class MatroskaParser(private val input: InputStream) {
+internal class MatroskaParser(
+    private val input: InputStream,
+    private val debugLog: (String) -> Unit = { Log.d(TAG, it) },
+) {
     private var pos = 0L
+    private var timestampScaleNs = DEFAULT_TIMESTAMP_SCALE_NS
 
     private data class TrackInfo(val number: Long, val name: String, val codec: String)
+    private data class RawSubtitle(
+        val startTicks: Long,
+        val durationTicks: Long?,
+        val text: String,
+    )
     private val subTracks = mutableListOf<TrackInfo>()
-    private val rawBlocks = mutableMapOf<Long, MutableList<Pair<Long, String>>>()
+    private val rawBlocks = mutableMapOf<Long, MutableList<RawSubtitle>>()
 
     fun parse(): List<SubtitleTrack> {
         val (id1, sz1) = elem() ?: return emptyList()
@@ -89,12 +102,21 @@ private class MatroskaParser(private val input: InputStream) {
         while (pos < segEnd) {
             val (id, sz) = elem() ?: break
             when (id) {
+                INFO    -> parseInfo(sz)
                 TRACKS  -> parseTracks(sz)
                 CLUSTER -> if (subTracks.isNotEmpty()) parseCluster(sz) else skip(sz)
                 else    -> skip(sz)
             }
         }
         return buildResult()
+    }
+
+    private fun parseInfo(sz: Long) {
+        val end = pos + sz
+        while (pos < end) {
+            val (id, esz) = elem() ?: break
+            if (id == TIMESTAMP_SCALE) timestampScaleNs = readUint(esz) else skip(esz)
+        }
     }
 
     private fun parseTracks(sz: Long) {
@@ -126,7 +148,7 @@ private class MatroskaParser(private val input: InputStream) {
                 ?: codeToDisplayName(langIetf).takeIf { it.isNotBlank() }
                 ?: codeToDisplayName(lang).takeIf { it.isNotBlank() }
                 ?: "Track ${subTracks.size + 1}"
-            Log.d(TAG, "Subtitle track: number=$num name=$dispName codec=$codec lang=$lang ietf=$langIetf")
+            debugLog("Subtitle track: number=$num name=$dispName codec=$codec lang=$lang ietf=$langIetf")
             subTracks += TrackInfo(num, dispName, codec)
             rawBlocks[num] = mutableListOf()
         }
@@ -152,33 +174,40 @@ private class MatroskaParser(private val input: InputStream) {
         val timeRel  = readInt16()
         skip(1L) // flags byte
         val headerSz = pos - before
-        putText(trackNum, clusterTs + timeRel, sz - headerSz)
+        putText(trackNum, clusterTs + timeRel, sz - headerSz, durationTicks = null)
     }
 
     private fun parseBlockGroup(sz: Long, clusterTs: Long) {
         val end = pos + sz
-        var trackNum = -1L; var startMs = 0L; var text = ""; var hasBlock = false
+        var trackNum = -1L; var startTicks = 0L; var durationTicks: Long? = null
+        var text = ""; var hasBlock = false
         while (pos < end) {
             val (id, esz) = elem() ?: break
-            if (id == BLOCK) {
-                val before = pos
-                trackNum = readVint()
-                startMs  = clusterTs + readInt16()
-                skip(1L) // flags byte
-                val headerSz = pos - before
-                val raw = rawBlocks[trackNum]
-                if (raw != null) text = readStr(esz - headerSz) else skip(esz - headerSz)
-                hasBlock = true
-            } else skip(esz)
+            when (id) {
+                BLOCK -> {
+                    val before = pos
+                    trackNum = readVint()
+                    startTicks = clusterTs + readInt16()
+                    skip(1L) // flags byte
+                    val headerSz = pos - before
+                    val raw = rawBlocks[trackNum]
+                    if (raw != null) text = readStr(esz - headerSz) else skip(esz - headerSz)
+                    hasBlock = true
+                }
+                BLOCK_DURATION -> durationTicks = readUint(esz)
+                else -> skip(esz)
+            }
         }
-        if (hasBlock && text.isNotEmpty()) rawBlocks[trackNum]?.add(startMs to text)
+        if (hasBlock && text.isNotEmpty()) {
+            rawBlocks[trackNum]?.add(RawSubtitle(startTicks, durationTicks, text))
+        }
     }
 
-    private fun putText(trackNum: Long, startMs: Long, dataSz: Long) {
+    private fun putText(trackNum: Long, startTicks: Long, dataSz: Long, durationTicks: Long?) {
         val raw = rawBlocks[trackNum]
         if (raw != null) {
             val text = readStr(dataSz).trim()
-            if (text.isNotEmpty()) raw.add(startMs to text)
+            if (text.isNotEmpty()) raw.add(RawSubtitle(startTicks, durationTicks, text))
         } else skip(dataSz)
     }
 
@@ -186,21 +215,29 @@ private class MatroskaParser(private val input: InputStream) {
         val result = mutableListOf<SubtitleTrack>()
         var id = 0
         for ((number, name, codec) in subTracks) {
-            val raw = rawBlocks[number]?.sortedBy { it.first } ?: continue
-            val entries = raw.mapIndexedNotNull { i, (startMs, rawText) ->
-                val text = SubtitleText.normalize(extractText(rawText, codec))
+            val raw = rawBlocks[number]?.sortedBy { it.startTicks } ?: continue
+            val entries = raw.mapIndexedNotNull { i, block ->
+                val text = SubtitleText.normalize(extractText(block.text, codec))
                 if (text.isEmpty()) {
                     null
                 } else {
-                    val endMs = raw.getOrNull(i + 1)?.first ?: (startMs + DEFAULT_DURATION_MS)
+                    val startMs = ticksToMs(block.startTicks)
+                    val endMs = when (val durationTicks = block.durationTicks) {
+                        null -> raw.getOrNull(i + 1)?.let { ticksToMs(it.startTicks) }
+                            ?: (startMs + DEFAULT_DURATION_MS)
+                        else -> ticksToMs(block.startTicks + durationTicks)
+                    }.coerceAtLeast(startMs + 1L)
                     SubtitleEntry(startMs, endMs, text)
                 }
             }
-            Log.d(TAG, "Track '$name': ${entries.size} entries")
+            debugLog("Track '$name': ${entries.size} entries")
             if (entries.isNotEmpty()) result += SubtitleTrack(id++, name, entries)
         }
         return result
     }
+
+    private fun ticksToMs(ticks: Long): Long =
+        Math.round(ticks.toDouble() * timestampScaleNs / 1_000_000.0)
 
     // EBML primitives
 

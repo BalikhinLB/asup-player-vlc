@@ -46,6 +46,7 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isGone
@@ -82,6 +83,12 @@ class MainActivity : ComponentActivity() {
     private var subtitleLongPressAction: SubtitleTapAction = SubtitleTapAction.ShowMenu
     private val controlsHandler = Handler(Looper.getMainLooper())
     private val hideControlsRunnable = Runnable { hidePlayerControls() }
+    private val hideSystemBarsRunnable = Runnable {
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            WindowCompat.getInsetsController(window, window.decorView)
+                .hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
     private val hideSwipeIndicatorRunnable = Runnable { dismissSwipeIndicator() }
 
     private enum class SwipeMode { NONE, BRIGHTNESS, VOLUME, SEEK_BACK, SEEK_FORWARD }
@@ -356,18 +363,58 @@ class MainActivity : ComponentActivity() {
             },
         )
 
-        ViewCompat.setOnApplyWindowInsetsListener(controlsContainer) { view, insets ->
-            val navigationBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+        fun applyPlayerControlInsets(insets: WindowInsetsCompat) {
             val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            view.setPadding(0, 0, 0, if (isLandscape) 0 else navigationBars.bottom)
+            val navigationBarsVisible = insets.isVisible(WindowInsetsCompat.Type.navigationBars())
+            val statusBarsVisible = insets.isVisible(WindowInsetsCompat.Type.statusBars())
+            val navigationBars = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.navigationBars())
+            val statusBars = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.statusBars())
+            val navigationLeft = if (navigationBarsVisible) navigationBars.left else 0
+            val navigationRight = if (navigationBarsVisible) navigationBars.right else 0
+            val navigationBottom = if (navigationBarsVisible) navigationBars.bottom else 0
+
+            controlsHandler.removeCallbacks(hideSystemBarsRunnable)
+            if (isLandscape && (navigationBarsVisible || statusBarsVisible)) {
+                controlsHandler.postDelayed(hideSystemBarsRunnable, SYSTEM_BARS_AUTO_HIDE_DELAY_MS)
+            }
+
+            controlsContainer.setPadding(0, 0, 0, if (isLandscape) 0 else navigationBottom)
+            bottomControls.setPadding(
+                dp(8) + if (isLandscape) navigationLeft else 0,
+                dp(1),
+                dp(8) + if (isLandscape) navigationRight else 0,
+                dp(2) + if (isLandscape) navigationBottom else 0,
+            )
+            (openInPlayerButton.layoutParams as FrameLayout.LayoutParams).let { params ->
+                params.topMargin = dp(4) + if (isLandscape && statusBarsVisible) statusBars.top else 0
+                params.marginEnd = dp(4) + if (isLandscape) navigationRight else 0
+                openInPlayerButton.layoutParams = params
+            }
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(controlsContainer) { _, insets ->
+            applyPlayerControlInsets(insets)
             insets
         }
+        ViewCompat.setWindowInsetsAnimationCallback(
+            controlsContainer,
+            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+                ): WindowInsetsCompat {
+                    applyPlayerControlInsets(insets)
+                    return insets
+                }
+            },
+        )
 
         controlsContainer.addOnLayoutChangeListener { _, _, _, right, bottom, _, _, oldRight, oldBottom ->
             if (right != oldRight || bottom != oldBottom) applySubtitlePosition()
         }
 
         applySystemBarsMode(resources.configuration)
+        ViewCompat.requestApplyInsets(controlsContainer)
 
         currentVideoUri?.let { uri ->
             val cached = recentFilesStore.loadSubtitles(uri)
@@ -431,6 +478,7 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
             applySystemBarsMode(resources.configuration)
+            ViewCompat.requestApplyInsets(controlsContainer)
             restoreVideoOutputAfterResume()
         }
     }
@@ -448,6 +496,7 @@ class MainActivity : ComponentActivity() {
         dismissMenuOverlay()
         controlsHandler.removeCallbacks(progressUpdater)
         controlsHandler.removeCallbacks(hideControlsRunnable)
+        controlsHandler.removeCallbacks(hideSystemBarsRunnable)
         controlsHandler.removeCallbacks(hideSwipeIndicatorRunnable)
         mpvView.removeObserver(mpvObserver)
         mpvView.destroy()
@@ -1755,7 +1804,7 @@ class MainActivity : ComponentActivity() {
 
         if (isLandscape) {
             controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
@@ -2015,6 +2064,7 @@ class MainActivity : ComponentActivity() {
         const val MILLIS_IN_SECOND = 1000L
         const val PROGRESS_UPDATE_INTERVAL_MS = 500L
         const val CONTROLS_AUTO_HIDE_DELAY_MS = 2000L
+        const val SYSTEM_BARS_AUTO_HIDE_DELAY_MS = 3000L
         const val DEFAULT_SUBTITLE_SIZE_PERCENT = 100
         const val MIN_SUBTITLE_SIZE_PERCENT = 75
         const val MAX_SUBTITLE_SIZE_PERCENT = 150

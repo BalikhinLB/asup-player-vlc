@@ -73,7 +73,7 @@ class MkvSubtitleExtractor {
 private class MatroskaParser(private val input: InputStream) {
     private var pos = 0L
 
-    private data class TrackInfo(val number: Long, val name: String)
+    private data class TrackInfo(val number: Long, val name: String, val codec: String)
     private val subTracks = mutableListOf<TrackInfo>()
     private val rawBlocks = mutableMapOf<Long, MutableList<Pair<Long, String>>>()
 
@@ -127,7 +127,7 @@ private class MatroskaParser(private val input: InputStream) {
                 ?: codeToDisplayName(lang).takeIf { it.isNotBlank() }
                 ?: "Track ${subTracks.size + 1}"
             Log.d(TAG, "Subtitle track: number=$num name=$dispName codec=$codec lang=$lang ietf=$langIetf")
-            subTracks += TrackInfo(num, dispName)
+            subTracks += TrackInfo(num, dispName, codec)
             rawBlocks[num] = mutableListOf()
         }
     }
@@ -185,11 +185,16 @@ private class MatroskaParser(private val input: InputStream) {
     private fun buildResult(): List<SubtitleTrack> {
         val result = mutableListOf<SubtitleTrack>()
         var id = 0
-        for ((number, name) in subTracks) {
+        for ((number, name, codec) in subTracks) {
             val raw = rawBlocks[number]?.sortedBy { it.first } ?: continue
-            val entries = raw.mapIndexed { i, (startMs, text) ->
-                val endMs = raw.getOrNull(i + 1)?.first ?: (startMs + DEFAULT_DURATION_MS)
-                SubtitleEntry(startMs, endMs, text)
+            val entries = raw.mapIndexedNotNull { i, (startMs, rawText) ->
+                val text = SubtitleText.normalize(extractText(rawText, codec))
+                if (text.isEmpty()) {
+                    null
+                } else {
+                    val endMs = raw.getOrNull(i + 1)?.first ?: (startMs + DEFAULT_DURATION_MS)
+                    SubtitleEntry(startMs, endMs, text)
+                }
             }
             Log.d(TAG, "Track '$name': ${entries.size} entries")
             if (entries.isNotEmpty()) result += SubtitleTrack(id++, name, entries)
@@ -284,4 +289,9 @@ private class MatroskaParser(private val input: InputStream) {
 
     private fun isTextCodec(codec: String) =
         codec == "S_TEXT/UTF8" || codec == "S_TEXT/ASS" || codec == "S_TEXT/SSA"
+
+    private fun extractText(rawText: String, codec: String): String {
+        if (codec != "S_TEXT/ASS" && codec != "S_TEXT/SSA") return rawText
+        return rawText.split(',', limit = 9).getOrElse(8) { rawText }
+    }
 }

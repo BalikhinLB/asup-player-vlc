@@ -16,7 +16,8 @@ class SubtitleRenderer(private val view: TextView) {
         }
         val entry = activeTrack?.getActiveEntry(timeMs)
         if (entry != null) {
-            view.text = Html.fromHtml(entry.text.replace("\n", "<br>"), Html.FROM_HTML_MODE_LEGACY)
+            val text = SubtitleText.normalize(entry.text)
+            view.text = Html.fromHtml(text.replace("\n", "<br>"), Html.FROM_HTML_MODE_LEGACY)
             view.isVisible = true
         } else {
             view.isVisible = false

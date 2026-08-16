@@ -61,4 +61,5 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.fragment)
+    testImplementation(libs.junit)
 }

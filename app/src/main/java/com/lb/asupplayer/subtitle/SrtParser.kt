@@ -7,8 +7,6 @@ object SrtParser {
     private val TIMING_RE = Regex(
         """(\d+):(\d+):(\d+)[,.](\d{1,3})\s*-->\s*(\d+):(\d+):(\d+)[,.](\d{1,3})""",
     )
-    private val ASS_CODE_RE = Regex("""\{[^}]+\}""")
-
     fun parse(stream: InputStream): List<SubtitleEntry> =
         parse(stream.bufferedReader(Charsets.UTF_8).readText())
 
@@ -35,7 +33,7 @@ object SrtParser {
             if (startMs >= endMs) continue
 
             val body = lines.drop(timingIdx + 1).joinToString("\n")
-            val text = ASS_CODE_RE.replace(body, "").trim()
+            val text = SubtitleText.normalize(body)
             if (text.isEmpty()) continue
 
             entries.add(SubtitleEntry(startMs, endMs, text))

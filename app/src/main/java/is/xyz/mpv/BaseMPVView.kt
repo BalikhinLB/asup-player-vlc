@@ -92,9 +92,18 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
     // Surface callbacks
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        val resizedWhilePaused = surfaceAttached && surfaceWidth > 0 && surfaceHeight > 0 &&
+            (surfaceWidth != width || surfaceHeight != height) &&
+            MPVLib.getPropertyBoolean("pause") == true
+
+        // On pause, EGL can keep a buffer with the old geometry after a resize.
+        // Recreate the video output so the paused frame uses the new surface size.
+        // Do not toggle pause or advance playback to force a redraw.
+        if (resizedWhilePaused) MPVLib.setPropertyString("vo", "null")
         surfaceWidth = width
         surfaceHeight = height
         MPVLib.setPropertyString("android-surface-size", "${width}x$height")
+        if (resizedWhilePaused) MPVLib.setPropertyString("vo", voInUse)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

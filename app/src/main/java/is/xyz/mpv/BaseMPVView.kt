@@ -12,6 +12,8 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
     private var surfaceAttached = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
+    private var videoOutputSuspended = false
+    private var videoOutputNeedsReset = false
 
     /**
      * Initialize libmpv.
@@ -78,21 +80,44 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
         MPVLib.setOptionString("vo", vo)
     }
 
+    fun suspendVideoOutput() {
+        videoOutputSuspended = true
+        videoOutputNeedsReset = true
+        // Release GPU/decoder output resources before Android reclaims them in the background.
+        MPVLib.setPropertyString("vo", "null")
+        MPVLib.setPropertyString("force-window", "no")
+    }
+
+    fun resumeVideoOutput() {
+        videoOutputSuspended = false
+        restoreVideoOutput()
+    }
+
     fun restoreVideoOutput() {
-        if (!surfaceAttached || !holder.surface.isValid) return
+        if (videoOutputSuspended || !surfaceAttached || !holder.surface.isValid ||
+            surfaceWidth <= 0 || surfaceHeight <= 0) return
+
+        if (videoOutputNeedsReset) {
+            // A valid Java Surface does not guarantee that the old native/EGL output survived.
+            // Reset it once per background round trip, after the surface size is known.
+            Log.w(TAG, "reconnecting surface after background")
+            MPVLib.setPropertyString("vo", "null")
+            MPVLib.detachSurface()
+            MPVLib.attachSurface(holder.surface)
+            videoOutputNeedsReset = false
+        }
 
         Log.w(TAG, "restoring video output")
         MPVLib.setOptionString("force-window", "yes")
-        if (surfaceWidth > 0 && surfaceHeight > 0) {
-            MPVLib.setPropertyString("android-surface-size", "${surfaceWidth}x$surfaceHeight")
-        }
+        MPVLib.setPropertyString("android-surface-size", "${surfaceWidth}x$surfaceHeight")
         MPVLib.setPropertyString("vo", voInUse)
     }
 
     // Surface callbacks
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        val resizedWhilePaused = surfaceAttached && surfaceWidth > 0 && surfaceHeight > 0 &&
+        val resizedWhilePaused = !videoOutputSuspended && surfaceAttached &&
+            surfaceWidth > 0 && surfaceHeight > 0 &&
             (surfaceWidth != width || surfaceHeight != height) &&
             MPVLib.getPropertyBoolean("pause") == true
 
@@ -103,7 +128,8 @@ abstract class BaseMPVView(context: Context, attrs: AttributeSet) : SurfaceView(
         surfaceWidth = width
         surfaceHeight = height
         MPVLib.setPropertyString("android-surface-size", "${width}x$height")
-        if (resizedWhilePaused) MPVLib.setPropertyString("vo", voInUse)
+        // surfaceCreated can run before a usable size is available, including on resume.
+        restoreVideoOutput()
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

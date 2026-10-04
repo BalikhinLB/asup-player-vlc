@@ -450,6 +450,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        mpvView.resumeVideoOutput()
         restoreVideoOutputAfterResume()
     }
 
@@ -470,6 +471,7 @@ class MainActivity : ComponentActivity() {
         if (!isChangingConfigurations) {
             saveCurrentSettings()
             mpvView.pause()
+            mpvView.suspendVideoOutput()
             setKeepScreenOn(false)
         }
     }
